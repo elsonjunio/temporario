@@ -14,7 +14,6 @@ class ProviderInfo:
 
 
 class Registry:
-
     def __init__(self, providers_dir: str):
         self.providers_dir = Path(providers_dir)
 
@@ -34,16 +33,16 @@ class Registry:
 
             run_script = None
 
-            if os.name == "nt":
+            if os.name == 'nt':
 
-                candidate = entry / "run.bat"
+                candidate = entry / 'run.bat'
 
                 if candidate.exists():
                     run_script = candidate
 
             else:
 
-                candidate = entry / "run.sh"
+                candidate = entry / 'run.sh'
 
                 if candidate.exists():
                     run_script = candidate
@@ -66,12 +65,9 @@ class Registry:
 
             provider.process = self._start_provider(provider)
 
-    def _start_provider(
-        self,
-        provider: ProviderInfo
-    ) -> subprocess.Popen:
+    def _start_provider(self, provider: ProviderInfo) -> subprocess.Popen:
 
-        if os.name == "nt":
+        if os.name == 'nt':
 
             return subprocess.Popen(
                 [str(provider.run_script)],
@@ -104,16 +100,13 @@ class Registry:
 
         try:
 
-            if os.name == "nt":
+            if os.name == 'nt':
 
                 process.terminate()
 
             else:
 
-                os.kill(
-                    process.pid,
-                    signal.SIGTERM
-                )
+                os.kill(process.pid, signal.SIGTERM)
 
             process.wait(timeout=5)
 
@@ -132,9 +125,7 @@ class Registry:
 
         provider = self.providers[name]
 
-        provider.process = self._start_provider(
-            provider
-        )
+        provider.process = self._start_provider(provider)
 
     def get(self, name: str) -> ProviderInfo | None:
 
@@ -152,13 +143,11 @@ class Registry:
 
             result.append(
                 {
-                    "name": provider.name,
-                    "path": str(provider.path),
-                    "running": provider.process is not None,
-                    "pid": (
-                        provider.process.pid
-                        if provider.process
-                        else None
+                    'name': provider.name,
+                    'path': str(provider.path),
+                    'running': provider.process is not None,
+                    'pid': (
+                        provider.process.pid if provider.process else None
                     ),
                 }
             )
