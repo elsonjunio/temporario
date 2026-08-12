@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +10,7 @@ from src.memory import Memory
 from src.providers.opencode import OpenCodeProvider
 from src.tools import registry as tool_registry
 from src.tools.registry import ToolRegistry
+from src.toolparse import is_tool_attempt
 from src.utils import (
     build_config_prompt,
     build_environment_info,
@@ -15,6 +19,12 @@ from src.utils import (
 )
 
 DEFAULT_MAX_ITERATIONS = 5
+
+REPAIR_INSTRUCTIONS = (
+    "Output ONLY the tool call as a single JSON object with exactly the keys "
+    '"tool", "action" and "params". No prose, no markdown fences.\n'
+    "Previous response (re-emit it correctly):\n{raw}"
+)
 
 
 class Agent:
@@ -35,6 +45,7 @@ class Agent:
         registry: ToolRegistry | None = None,
         extra_tools: list[Any] | None = None,
         environment: str | None = None,
+        log_path: str | None = None,
     ) -> None:
         self.provider = provider
         self.memory = memory if memory is not None else Memory()
@@ -46,6 +57,19 @@ class Agent:
             workspace=str(Path.cwd())
         )
         self._pending_call: dict[str, Any] | None = None
+        self.log_path = log_path or os.getenv("AGENT_LOG", "")
+
+    def _log(self, entry: dict[str, Any]) -> None:
+        """Append one JSON line with the raw model response and parse result.
+
+        Controlled by ``AGENT_LOG`` (path) or the ``log_path`` constructor
+        argument; a no-op when unset.
+        """
+        if not self.log_path:
+            return
+        entry["ts"] = time.time()
+        with open(self.log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def run(
         self,
@@ -78,8 +102,35 @@ class Agent:
             response = self.provider.infer(current_prompt, config, **settings)
 
             call = parse_tool_call(response)
+            self._log(
+                {
+                    "prompt": current_prompt,
+                    "response": response,
+                    "parse": "none" if call is None else "ok",
+                }
+            )
+
+            if call is None and is_tool_attempt(response):
+                repair = self.provider.infer(
+                    REPAIR_INSTRUCTIONS.format(raw=response), config, **settings
+                )
+                call = parse_tool_call(repair)
+                self._log(
+                    {
+                        "prompt": "REPAIR",
+                        "response": repair,
+                        "parse": "none" if call is None else "repaired",
+                    }
+                )
+
             if call is None:
                 self.memory.add_assistant(response)
+                if is_tool_attempt(response):
+                    return (
+                        "I could not parse the tool call into a usable request. "
+                        'Reply with a single JSON block like {"tool": "...", '
+                        '"action": "...", "params": {...}}. Nothing was executed.'
+                    )
                 return response
 
             result = self.registry.dispatch(

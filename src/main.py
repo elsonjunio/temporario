@@ -10,9 +10,24 @@ from src.agent import Agent
 from src.context import ContextCompressor
 from src.memory import Memory
 from src.orchestrator import create_orchestrator_tool
+from src.providers.lmstudio import LMStudioProvider
 from src.providers.opencode import OpenCodeProvider, ProviderError
+from src.repl import read_turn, setup_readline
 from src.tools.registry import build_default_registry
 from src.utils import build_environment_info
+
+
+def build_provider():
+    """Instantiate the provider named by ``AGENT_PROVIDER`` (from ``.env``).
+
+    Supported values: ``opencode`` (default) or ``lmstudio``.
+    """
+    name = os.getenv("AGENT_PROVIDER", "opencode").strip().lower()
+    if name == "lmstudio":
+        return LMStudioProvider()
+    if name == "opencode":
+        return OpenCodeProvider()
+    raise ValueError(f"Unknown AGENT_PROVIDER: {name!r}")
 
 
 def main() -> None:
@@ -21,12 +36,17 @@ def main() -> None:
     workspace = os.path.abspath(os.getcwd())
     print(f"Workspace: {workspace}")
 
-    provider = OpenCodeProvider(model="big-pickle")
+    provider = build_provider()
 
     registry = build_default_registry()
 
-    if not provider.api_key:
+    if isinstance(provider, OpenCodeProvider) and not provider.api_key:
         print("OPENCODE_API_KEY is not set. Skipping live agent demo.")
+        print("Tool manuals available via the registry get_manual():")
+        print(registry.get_manual())
+        return
+    if isinstance(provider, LMStudioProvider) and not provider.model:
+        print("LMSTUDIO_MODEL is not set. Skipping live agent demo.")
         print("Tool manuals available via the registry get_manual():")
         print(registry.get_manual())
         return
@@ -49,14 +69,21 @@ def main() -> None:
     )
 
     print(f"--- Agent chat (model={provider.model}) ---")
-    print("Type a question, or /quit to exit.\n")
+    print("Type a question; a blank line sends it. /quit to exit.")
+    print("Arrow keys edit the current line; up/down recalls past prompts.\n")
+
+    setup_readline()
 
     while True:
         try:
-            question = input("You: ").strip()
-        except EOFError:
+            question = read_turn()
+        except KeyboardInterrupt:
+            print()
+            continue
+        if question is None:
             print()
             break
+        question = question.strip()
         if not question:
             continue
         if question.lower() in {"/quit", "/exit", "/bye"}:
@@ -64,6 +91,9 @@ def main() -> None:
 
         try:
             answer = agent.run(question)
+        except KeyboardInterrupt:
+            print("\n(interrupted)")
+            continue
         except ProviderError as exc:
             print(f"Provider error: {exc}")
             continue

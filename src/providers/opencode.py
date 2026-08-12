@@ -14,21 +14,30 @@ class ProviderError(RuntimeError):
 class OpenCodeProvider:
     """Client for OpenCode Zen (OpenAI-compatible chat completions).
 
-    Defaults to the ``big-pickle`` model. Auth is read from the
-    ``OPENCODE_API_KEY`` environment variable.
+    Config is read from the environment (via ``.env``) but every value can be
+    overridden by constructor arguments:
+
+    - ``OPENCODE_BASE_URL`` — API base URL (default ``https://opencode.ai/zen/v1``)
+    - ``OPENCODE_MODEL`` — model id (default ``big-pickle``)
+    - ``OPENCODE_API_KEY`` — auth token
+    - ``OPENCODE_TIMEOUT`` — request timeout in seconds (default ``60``)
     """
 
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "big-pickle",
-        base_url: str = "https://opencode.ai/zen/v1",
-        timeout: int = 60,
+        model: str | None = None,
+        base_url: str | None = None,
+        timeout: int | None = None,
     ):
-        self.api_key = api_key or os.getenv("OPENCODE_API_KEY", "")
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.api_key = (
+            api_key if api_key is not None else os.getenv("OPENCODE_API_KEY", "")
+        )
+        self.model = model or os.getenv("OPENCODE_MODEL", "big-pickle")
+        self.base_url = (
+            base_url or os.getenv("OPENCODE_BASE_URL") or "https://opencode.ai/zen/v1"
+        ).rstrip("/")
+        self.timeout = timeout or int(os.getenv("OPENCODE_TIMEOUT", "60"))
 
     @property
     def _chat_url(self) -> str:
