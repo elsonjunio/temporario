@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
-from src.search.file_reader import handle_paginated_read
+from src.tools.read_file import handle_read_file
+
 
 class TestFileReader(unittest.TestCase):
     def setUp(self):
@@ -14,13 +15,13 @@ class TestFileReader(unittest.TestCase):
 
     def test_attribute_error_repro(self):
         try:
-            result = handle_paginated_read(str(self.test_file), page=1, page_size=1)
+            result = handle_read_file(str(self.test_file), page=1, page_size=1)
             self.assertEqual(result["status"], "success")
         except AttributeError as e:
             self.fail(f"AttributeError raised: {e}")
 
     def test_pagination_bounds(self):
-        result = handle_paginated_read(str(self.test_file), page=10, page_size=5)
+        result = handle_read_file(str(self.test_file), page=10, page_size=5)
         self.assertEqual(result["status"], "error")
 
     def test_middle_of_line_pagination(self):
@@ -28,7 +29,7 @@ class TestFileReader(unittest.TestCase):
         with open(test_file, "w", encoding="utf-8") as f:
             f.write("word1 word2\nword3 word4")
         try:
-            result = handle_paginated_read(str(test_file), page=2, page_size=2)
+            result = handle_read_file(str(test_file), page=2, page_size=2)
             self.assertEqual(result["status"], "success")
             self.assertIn("word3", result["current_page_content"])
             self.assertIn("word4", result["current_page_content"])
@@ -42,7 +43,7 @@ class TestFileReader(unittest.TestCase):
         with open(test_file, "w", encoding="utf-8") as f:
             f.write("word1\n\nword2")
         try:
-            result = handle_paginated_read(str(test_file), page=1, page_size=10)
+            result = handle_read_file(str(test_file), page=1, page_size=10)
             self.assertEqual(result["status"], "success")
             self.assertIn("word1", result["current_page_content"])
             self.assertIn("word2", result["current_page_content"])
@@ -56,10 +57,10 @@ class TestFileReader(unittest.TestCase):
             f.write("\t  word1 word2\n  word3 word4")
         try:
             # Page 1 should include the leading tabs/spaces of the first line
-            result = handle_paginated_read(str(test_file), page=1, page_size=2)
+            result = handle_read_file(str(test_file), page=1, page_size=2)
             self.assertIn("\t  word1", result["current_page_content"])
             # Page 2 should start at word3 (no leading spaces from previous line)
-            result = handle_paginated_read(str(test_file), page=2, page_size=2)
+            result = handle_read_file(str(test_file), page=2, page_size=2)
             self.assertIn("word3", result["current_page_content"])
         finally:
             if test_file.exists():
@@ -71,11 +72,12 @@ class TestFileReader(unittest.TestCase):
             f.write("word1\n\nword2")
         try:
             # Page 1 should include the empty line between word1 and word2
-            result = handle_paginated_read(str(test_file), page=1, page_size=10)
+            result = handle_read_file(str(test_file), page=1, page_size=10)
             self.assertIn("word1\n\nword2", result["current_page_content"])
         finally:
             if test_file.exists():
                 test_file.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

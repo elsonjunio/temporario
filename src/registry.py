@@ -33,16 +33,16 @@ class Registry:
 
             run_script = None
 
-            if os.name == 'nt':
+            if os.name == "nt":
 
-                candidate = entry / 'run.bat'
+                candidate = entry / "run.bat"
 
                 if candidate.exists():
                     run_script = candidate
 
             else:
 
-                candidate = entry / 'run.sh'
+                candidate = entry / "run.sh"
 
                 if candidate.exists():
                     run_script = candidate
@@ -67,7 +67,7 @@ class Registry:
 
     def _start_provider(self, provider: ProviderInfo) -> subprocess.Popen:
 
-        if os.name == 'nt':
+        if os.name == "nt":
 
             return subprocess.Popen(
                 [str(provider.run_script)],
@@ -100,7 +100,7 @@ class Registry:
 
         try:
 
-            if os.name == 'nt':
+            if os.name == "nt":
 
                 process.terminate()
 
@@ -143,12 +143,10 @@ class Registry:
 
             result.append(
                 {
-                    'name': provider.name,
-                    'path': str(provider.path),
-                    'running': provider.process is not None,
-                    'pid': (
-                        provider.process.pid if provider.process else None
-                    ),
+                    "name": provider.name,
+                    "path": str(provider.path),
+                    "running": provider.process is not None,
+                    "pid": (provider.process.pid if provider.process else None),
                 }
             )
 

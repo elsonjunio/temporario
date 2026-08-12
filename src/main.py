@@ -1,62 +1,75 @@
-from src.search.list_files import handle_list_files
-from src.search.search_files import handle_search_files
-from src.search.file_reader import handle_paginated_read
+import os
+import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.agent import Agent
+from src.context import ContextCompressor
+from src.memory import Memory
+from src.orchestrator import create_orchestrator_tool
+from src.providers.opencode import OpenCodeProvider, ProviderError
+from src.tools.registry import build_default_registry
+from src.utils import build_environment_info
 
 
-def main():
-    # Test case for listing files in the current directory (non-recursive)
-    print('--- Testing list_files (Non-Recursive) ---')
-    try:
-        result = handle_list_files(
-            path='.', page=1, page_size=5, recursive=False
-        )
-        if 'error' not in result:
-            print(
-                f"Successfully retrieved file listing. Total items found: {result['total']}"
-            )
-            # Print a summary of the first few items for verification
-            for item in result['items']:
-                print(f"- {item['name']} ({item['type']})")
-        else:
-            print(f"Error during test: {result['error']}")
+def main() -> None:
+    load_dotenv()
 
-    except Exception as e:
-        print(f'An unexpected error occurred during testing: {e}')
+    workspace = os.path.abspath(os.getcwd())
+    print(f"Workspace: {workspace}")
 
-    # Test case for searching files in the current directory (recursive)
-    print('\n--- Testing search_files (Recursive, *.py) ---')
-    try:
-        result = handle_search_files(
-            pattern='*.py', path='.', page=1, page_size=5, recursive=True
-        )
-        if 'error' not in result:
-            print(
-                f"Successfully retrieved file search results. Total items found: {result['total']}"
-            )
-            # Print a summary of the first few items for verification
-            for item in result['items']:
-                print(f"- {item['name']} ({item['type']})")
-        else:
-            print(f"Error during test: {result['error']}")
+    provider = OpenCodeProvider(model="big-pickle")
 
-    except Exception as e:
-        print(f'An unexpected error occurred during testing: {e}')
+    registry = build_default_registry()
+
+    if not provider.api_key:
+        print("OPENCODE_API_KEY is not set. Skipping live agent demo.")
+        print("Tool manuals available via the registry get_manual():")
+        print(registry.get_manual())
+        return
+
+    memory = Memory(compressor=ContextCompressor(provider=provider))
+
+    orchestrator = create_orchestrator_tool(
+        registry,
+        provider,
+        memory,
+        root=workspace,
+    )
+    registry.register(orchestrator.name, orchestrator)
+
+    agent = Agent(
+        provider=provider,
+        memory=memory,
+        registry=registry,
+        environment=build_environment_info(workspace=workspace),
+    )
+
+    print(f"--- Agent chat (model={provider.model}) ---")
+    print("Type a question, or /quit to exit.\n")
+
+    while True:
+        try:
+            question = input("You: ").strip()
+        except EOFError:
+            print()
+            break
+        if not question:
+            continue
+        if question.lower() in {"/quit", "/exit", "/bye"}:
+            break
+
+        try:
+            answer = agent.run(question)
+        except ProviderError as exc:
+            print(f"Provider error: {exc}")
+            continue
+
+        print("Agent:", answer)
 
 
-if __name__ == '__main__':
-    main()
-
-# Example usage (optional, for testing)
 if __name__ == "__main__":
-    # Replace with a real file path for local testing
-    test_file = "src/main.py" 
-    result = handle_paginated_read(test_file, page=1, page_size=50, show_line_number=True)
-    print("--- Test Result ---")
-    if result['status'] == 'success':
-        print(f"Total Words: {result['total_words']}")
-        print(f"Total Pages: {result['total_pages']}")
-        print("\nPage 1 Content (first 50 words):")
-        print("----------------------------------------")
-        print(result['current_page_content'][:1000]) # Print up to 1000 chars for preview
-    else:
-        print(f"Error: {result.get('error')}")
+    main()
