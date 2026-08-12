@@ -39,6 +39,7 @@ def create_orchestrator_tool(
             "discover": orch.discover,
             "plan": orch.plan,
             "execute": orch.execute,
+            "pending": orch.pending,
             "validate": orch.validate,
             "undo": orch.undo,
             "abort": orch.abort,

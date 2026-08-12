@@ -4,6 +4,7 @@ from src.memory import Memory
 from src.utils import (
     build_config_prompt,
     build_environment_info,
+    classify_followup,
     parse_tool_call,
 )
 
@@ -142,6 +143,58 @@ class TestParseToolCall(unittest.TestCase):
     def test_plain_answer_without_invoke_returns_none(self):
         text = "<invoke>like a normal mention, not a tool call</invoke>"
         self.assertIsNone(parse_tool_call(text))
+
+
+class TestClassifyFollowup(unittest.TestCase):
+    def test_pure_approvals(self):
+        for message in (
+            "sim",
+            "sim!",
+            "sim por favor",
+            "pode",
+            "pode ir",
+            "pode seguir",
+            "ok",
+            "ok, pode",
+            "continue",
+            "prossiga",
+            "vai",
+            "yes",
+            "go ahead",
+        ):
+            self.assertEqual(
+                classify_followup(message),
+                "approve",
+                f"expected approve for {message!r}",
+            )
+
+    def test_explicit_cancellations(self):
+        for message in ("não", "nao", "no", "cancela", "aborta", "para", "stop"):
+            self.assertEqual(
+                classify_followup(message), "abort", f"expected abort for {message!r}"
+            )
+
+    def test_ambiguous_goes_to_other(self):
+        for message in (
+            "sim, mas troque o nome",
+            "continue mas devagar",
+            "pode ir, porém mude o arquivo",
+            "o que você vai fazer?",
+            "não sei",
+            "",
+            "   ",
+            "conte mais sobre o plano",
+            "não continua",
+        ):
+            self.assertEqual(
+                classify_followup(message), "other", f"expected other for {message!r}"
+            )
+
+    def test_abort_takes_precedence(self):
+        self.assertEqual(classify_followup("não"), "abort")
+        self.assertEqual(classify_followup("no"), "abort")
+        self.assertEqual(classify_followup("não, cancela"), "abort")
+        self.assertEqual(classify_followup("para tudo"), "abort")
 
 
 if __name__ == "__main__":

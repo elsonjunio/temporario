@@ -12,6 +12,7 @@ class TestToolRegistry(unittest.TestCase):
                 "read_file",
                 "list_dir",
                 "search_files",
+                "grep_files",
                 "write_file",
                 "patch_file",
                 "delete_file",

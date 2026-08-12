@@ -5,6 +5,7 @@ from pathlib import Path
 from src.tools import facade
 from src.tools import (
     delete_file,
+    grep_files,
     list_dir,
     move_file,
     patch_file,
@@ -19,6 +20,7 @@ class TestToolManuals(unittest.TestCase):
     def test_each_tool_exposes_manual(self):
         for module in (
             delete_file,
+            grep_files,
             list_dir,
             move_file,
             patch_file,
@@ -38,6 +40,7 @@ class TestToolManuals(unittest.TestCase):
             "read_file",
             "list_dir",
             "search_files",
+            "grep_files",
             "write_file",
             "patch_file",
             "delete_file",
@@ -131,6 +134,97 @@ class TestSearchFilesDispatch(unittest.TestCase):
         for item in result["items"]:
             if item["type"] == "file":
                 self.assertTrue(item["name"].endswith(".py"))
+
+
+class TestGrepFilesDispatch(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        (self.base / "app.py").write_text(
+            "import os\n\ndef hello(name):\n    return f'hi {name}'\n",
+            encoding="utf-8",
+        )
+        (self.base / "readme.txt").write_text(
+            "Welcome to the app\nsee docs for more\n", encoding="utf-8"
+        )
+
+    def _grep(self, **params):
+        return grep_files.dispatch("search", path=str(self.base), **params)
+
+    def test_match_simple(self):
+        result = self._grep(pattern="hello")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total_files"], 1)
+        self.assertEqual(result["total_matches"], 1)
+        self.assertEqual(result["items"][0]["file"], "app.py")
+        self.assertEqual(result["items"][0]["matches"][0]["line"], 3)
+        self.assertIn("hello", result["items"][0]["matches"][0]["content"])
+
+    def test_case_insensitive_by_default(self):
+        result = self._grep(pattern="WELCOME")
+        self.assertEqual(result["total_files"], 1)
+
+    def test_case_sensitive(self):
+        result = self._grep(pattern="welcome", case_sensitive=True)
+        self.assertEqual(result["total_files"], 0)
+
+    def test_regex(self):
+        result = self._grep(pattern=r"hi \S+")
+        self.assertEqual(result["total_files"], 1)
+        self.assertEqual(result["total_matches"], 1)
+
+    def test_include_filter(self):
+        result = self._grep(pattern="the", include="*.py")
+        self.assertEqual(result["total_files"], 0)
+        result = self._grep(pattern="the", include="*.txt")
+        self.assertEqual(result["total_files"], 1)
+
+    def test_excluded_dir(self):
+        (self.base / ".venv" / "lib").mkdir(parents=True)
+        (self.base / ".venv" / "lib" / "x.py").write_text("hello world\n")
+        result = self._grep(pattern="hello")
+        self.assertEqual(result["total_files"], 1)
+        self.assertEqual(result["items"][0]["file"], "app.py")
+
+    def test_binary_skipped(self):
+        (self.base / "data.bin").write_bytes(b"\x00\x01hello\x00")
+        result = self._grep(pattern="hello")
+        self.assertEqual(result["total_files"], 1)
+        self.assertEqual(result["items"][0]["file"], "app.py")
+
+    def test_context_lines(self):
+        result = self._grep(pattern="hello", context_lines=2)
+        context = result["items"][0]["matches"][0]["context"]
+        self.assertIn("import os", context)
+
+    def test_pagination(self):
+        for i in range(5):
+            (self.base / f"f{i}.py").write_text(f"needle {i}\n")
+        result = self._grep(pattern="needle", page=1, page_size=2)
+        self.assertEqual(len(result["items"]), 2)
+        self.assertTrue(result["has_next"])
+
+    def test_missing_path(self):
+        result = grep_files.dispatch("search", pattern="x", path="/nonexistent/xyz")
+        self.assertEqual(result["error"], "path_not_found")
+
+    def test_invalid_regex(self):
+        result = self._grep(pattern="[unclosed")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Invalid regex", result["message"])
+
+    def test_empty_pattern(self):
+        result = self._grep(pattern="")
+        self.assertEqual(result["error"], "invalid_arguments")
+
+    def test_unknown_action(self):
+        result = grep_files.dispatch("nope", pattern="x")
+        self.assertEqual(result["error"], "unknown_action")
+
+    def test_invalid_arguments(self):
+        result = grep_files.dispatch("search")
+        self.assertEqual(result["error"], "invalid_arguments")
 
 
 class TestWriteFileDispatch(unittest.TestCase):
@@ -457,6 +551,7 @@ class TestFacadeRouting(unittest.TestCase):
                 "read_file",
                 "list_dir",
                 "search_files",
+                "grep_files",
                 "write_file",
                 "patch_file",
                 "delete_file",

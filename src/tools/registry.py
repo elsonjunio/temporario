@@ -4,6 +4,7 @@ from typing import Any
 
 from src.tools import (
     delete_file,
+    grep_files,
     list_dir,
     move_file,
     patch_file,
@@ -17,6 +18,7 @@ BASE_TOOLS = [
     "read_file",
     "list_dir",
     "search_files",
+    "grep_files",
     "write_file",
     "patch_file",
     "delete_file",
@@ -61,6 +63,7 @@ def build_default_registry() -> ToolRegistry:
     registry.register("read_file", read_file)
     registry.register("list_dir", list_dir)
     registry.register("search_files", search_files)
+    registry.register("grep_files", grep_files)
     registry.register("write_file", write_file)
     registry.register("patch_file", patch_file)
     registry.register("delete_file", delete_file)

@@ -274,7 +274,68 @@ class TestOrchestratorTool(OrchestratorTestCase):
         result = orch.dispatch("run", request="create result.txt")
         self.assertEqual(result["status"], "awaiting_confirmation")
         self.assertEqual(result["summary"][0]["tool"], "write_file")
+        self.assertIn("confirm=true", result["message"])
         self.assertFalse(target.exists())
+
+    def test_pending_reports_plan_after_confirmation_gate(self):
+        target = self.root / "result.txt"
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "write_file",
+                                "action": "write",
+                                "params": {
+                                    "file_path": str(target),
+                                    "content": "done\n",
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        orch = self._make_tool(provider)
+        preview = orch.dispatch("run", request="create result.txt")
+        self.assertEqual(preview["status"], "awaiting_confirmation")
+        pending = orch.dispatch("pending")
+        self.assertEqual(pending["status"], "pending_plan")
+        self.assertEqual(pending["request"], "create result.txt")
+        self.assertEqual(pending["steps"][0]["tool"], "write_file")
+
+    def test_pending_empty_when_no_plan(self):
+        provider = FakeProvider()
+        orch = self._make_tool(provider)
+        pending = orch.dispatch("pending")
+        self.assertEqual(pending["status"], "no_pending_plan")
+
+    def test_execute_resumes_pending_plan_without_steps(self):
+        target = self.root / "result.txt"
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "write_file",
+                                "action": "write",
+                                "params": {
+                                    "file_path": str(target),
+                                    "content": "done\n",
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        orch = self._make_tool(provider)
+        orch.dispatch("run", request="create result.txt")
+        result = orch.dispatch("execute", confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(target.read_text(), "done\n")
 
     def test_run_end_to_end(self):
         target = self.root / "result.txt"
@@ -302,9 +363,7 @@ class TestOrchestratorTool(OrchestratorTestCase):
         orch = self._make_tool(provider)
         first = orch.dispatch("run", request="create result.txt")
         self.assertEqual(first["status"], "awaiting_confirmation")
-        second = orch.dispatch(
-            "run", request="create result.txt", confirm=True
-        )
+        second = orch.dispatch("run", request="create result.txt", confirm=True)
         self.assertEqual(second["status"], "success")
         self.assertEqual(target.read_text(), "done\n")
 

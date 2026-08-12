@@ -41,9 +41,15 @@ MANUAL = (
     "    Params:\n"
     "      steps (list, optional): custom steps; defaults to the pending plan.\n"
     "      confirm (bool, default false): execution requires confirm=True;\n"
-    "        without it returns an 'awaiting_confirmation' preview.\n"
+    "        without it returns an 'awaiting_confirmation' preview. To resume\n"
+    "        the pending plan after user approval, call execute with\n"
+    "        confirm=True and NO steps.\n"
     "    Returns: per-step trace with validation results. On failure all\n"
     "      changes made so far are rolled back automatically.\n"
+    "  - pending\n"
+    "    Params: (none)\n"
+    "    Returns: the pending plan (request and steps) awaiting confirmation,\n"
+    "      or 'no_pending_plan' when there is nothing to resume.\n"
     "  - validate\n"
     "    Params:\n"
     "      path (str, required): file to check.\n"
@@ -123,11 +129,24 @@ class Orchestrator:
         return {
             "status": "awaiting_confirmation",
             "message": (
-                "The plan below is ready to execute. Call run with "
-                "confirm=True (or execute confirm=True) to proceed, or abort "
-                "to discard it."
+                "The plan below is ready to execute. Ask the user for "
+                "approval first. When the user approves, resume by calling "
+                "orchestrator execute with confirm=true and no steps (the "
+                "pending plan is reused, not re-planned). If the user wants "
+                "changes, call orchestrator run with the modified request. "
+                "To discard, call orchestrator abort."
             ),
             "summary": summary,
+            "steps": steps,
+        }
+
+    def pending(self) -> dict[str, Any]:
+        steps = (self.last_plan or {}).get("steps")
+        if self.last_plan is None or not steps:
+            return {"status": "no_pending_plan"}
+        return {
+            "status": "pending_plan",
+            "request": self.last_request,
             "steps": steps,
         }
 

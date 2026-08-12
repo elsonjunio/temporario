@@ -17,6 +17,45 @@ class FakeProvider:
         return self.responses.pop(0)
 
 
+class FakeOrchestrator:
+    """Stands in for the real orchestrator to exercise the confirm gate."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get_manual(self):
+        return "orchestrator manual\nActions:\n  - run\n  - execute\n  - abort"
+
+    def dispatch(self, action, **params):
+        self.calls.append((action, params))
+        if action == "run":
+            return {
+                "status": "awaiting_confirmation",
+                "message": "approval needed",
+                "summary": [
+                    {
+                        "step": 1,
+                        "tool": "write_file",
+                        "action": "write",
+                        "description": "write out.txt",
+                        "params": {"file_path": "out.txt"},
+                    }
+                ],
+                "steps": [
+                    {
+                        "tool": "write_file",
+                        "action": "write",
+                        "params": {"file_path": "out.txt"},
+                    }
+                ],
+            }
+        if action == "execute":
+            return {"status": "success", "trace": [{"tool": "write_file", "ok": True}]}
+        if action == "abort":
+            return {"status": "aborted", "discarded_snapshots": 0}
+        return {"error": "unknown_action"}
+
+
 class TestAgentLoop(unittest.TestCase):
     def test_plain_answer(self):
         provider = FakeProvider(["Final answer."])
@@ -92,6 +131,103 @@ class TestAgentLoop(unittest.TestCase):
         agent = Agent(provider=provider, registry=registry)
         self.assertEqual(agent.run("hi"), "plain answer")
         self.assertNotIn("orchestrator", agent.registry.list_tools())
+
+
+class TestConfirmationFlow(unittest.TestCase):
+    def _agent_with_orchestrator(self, provider):
+        registry = build_default_registry()
+        orch = FakeOrchestrator()
+        registry.register("orchestrator", orch)
+        agent = Agent(provider=provider, registry=registry)
+        return agent, orch
+
+    def _pending(self, provider):
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.run("crie out.txt")
+        return agent, orch
+
+    def test_awaiting_confirmation_marks_pending(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
+                "Plano pronto, posso executar?",
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        result = agent.run("crie out.txt")
+        self.assertIn("Plano pronto", result)
+        self.assertEqual(orch.calls[0][0], "run")
+        self.assertIsNotNone(agent._pending_call)
+        self.assertIn("awaiting", agent._pending_call["preview"]["status"])
+
+    def test_approval_resumes_without_model_guess(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
+                "Plano pronto, posso executar?",
+                "Pronto, executei.",
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.run("crie out.txt")
+        result = agent.run("sim")
+        self.assertEqual(result, "Pronto, executei.")
+        self.assertEqual(orch.calls[0], ("run", {"request": "crie out.txt"}))
+        self.assertEqual(orch.calls[1], ("execute", {"confirm": True}))
+        self.assertEqual(len(orch.calls), 2)
+        self.assertIsNone(agent._pending_call)
+
+    def test_approval_continues_with_more_tool_calls(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "x"}}\n```',
+                "Plano pronto, posso executar?",
+                '```json\n{"tool": "orchestrator", "action": "execute", "params": {"confirm": true}}\n```',
+                "Terminei.",
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.run("x")
+        result = agent.run("pode ir")
+        self.assertEqual(result, "Terminei.")
+        # deterministic resume first, then the model keeps working
+        self.assertEqual(orch.calls[1], ("execute", {"confirm": True}))
+        self.assertEqual(orch.calls[2], ("execute", {"confirm": True}))
+        self.assertEqual(len(orch.calls), 3)
+        self.assertIsNone(agent._pending_call)
+
+    def test_abort_cancels_pending(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "x"}}\n```',
+                "Plano pronto?",
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.run("x")
+        result = agent.run("não, cancela")
+        self.assertIn("cancelled", result)
+        self.assertEqual(orch.calls[1], ("abort", {}))
+        self.assertIsNone(agent._pending_call)
+        self.assertEqual(len(provider.calls), 2)
+
+    def test_conditional_approval_goes_to_model(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
+                "Plano pronto, posso executar?",
+                '```json\n{"tool": "orchestrator", "action": "execute", "params": {"confirm": true}}\n```',
+                "Executei com as mudanças.",
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.run("crie out.txt")
+        result = agent.run("sim, mas troque o nome")
+        self.assertEqual(result, "Executei com as mudanças.")
+        guidance = provider.calls[2][0]
+        self.assertIn("awaiting confirmation", guidance)
+        self.assertIn("sim, mas troque o nome", guidance)
+        self.assertEqual(orch.calls[1], ("execute", {"confirm": True}))
 
 
 if __name__ == "__main__":
