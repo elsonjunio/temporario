@@ -311,6 +311,27 @@ class TestExecutor(OrchestratorTestCase):
             "not found verbatim", result["trace"][0]["validated"]["expect_warn"]
         )
 
+    def test_command_expect_missing_warns_not_fails(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "Seed concluido com sucesso"'},
+                "validate_after": True,
+                "expect": "seed_concluido",
+                "description": "run seed",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn(
+            "not found in command output",
+            result["trace"][0]["validated"]["expect_warn"],
+        )
+
     def test_validation_expect_failure_rolls_back(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)

@@ -74,9 +74,18 @@ class Executor:
                 str(result.get(key) or "") for key in ("stdout", "stderr")
             )
             ok = result.get("status") == "success"
+            warn = None
             if ok and expect:
                 ok = expect.lower() in output.lower()
-            return {"ok": ok, "check": "command_output", "expect": expect}
+                if not ok:
+                    ok = True
+                    warn = f"expect {expect!r} not found in command output"
+            return {
+                "ok": ok,
+                "check": "command_output",
+                "expect": expect,
+                "expect_warn": warn,
+            }
 
         if target is None:
             return {"ok": True, "check": "no_target"}
