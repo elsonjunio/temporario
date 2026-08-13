@@ -22,6 +22,7 @@ SLASH_COMMANDS = [
     ("/bye", "sai do agente"),
     ("/help", "mostra esta ajuda"),
     ("/clear", "limpa a tela"),
+    ("/context", "mostra o contexto e a estimativa de tokens"),
 ]
 
 COMMAND_NAMES = [name for name, _ in SLASH_COMMANDS]
@@ -132,6 +133,24 @@ class ChatUI:
         self.console.print(
             Panel(Text("\n".join(lines)), title="Ajuda", border_style="blue")
         )
+
+    def show_context(
+        self,
+        context: str,
+        *,
+        token_count: int,
+        entries: int,
+        threshold: int | None = None,
+    ) -> None:
+        """Render the conversation context with a token/entry summary."""
+        body = Text()
+        summary = f"entradas: {entries}  |  tokens estimados: {token_count}"
+        if threshold:
+            summary += f"  |  limiar de compressão: {threshold}"
+        body.append(summary, style="bold")
+        body.append("\n\n")
+        body.append(context)
+        self.console.print(Panel(body, title="Contexto", border_style="magenta"))
 
     def show_manual(self, text: str) -> None:
         self.console.print(Panel(Text(text), title="Manuais", border_style="blue"))

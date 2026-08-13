@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.agent import Agent
-from src.context import ContextCompressor
+from src.context import ContextCompressor, estimate_tokens
 from src.memory import Memory
 from src.orchestrator import create_orchestrator_tool
 
@@ -43,7 +43,7 @@ def main() -> None:
 
     registry = build_default_registry()
 
-    if (isinstance(provider, OpenCodeProvider) and not provider.api_key):
+    if isinstance(provider, OpenCodeProvider) and not provider.api_key:
         ui.show_info(
             "Provedor sem chave/modelo configurado; exibindo manuais das ferramentas."
         )
@@ -92,6 +92,24 @@ def main() -> None:
         if question.lower() == "/clear":
             ui.clear()
             continue
+        if question.lower() == "/context":
+            entries = memory.get_entries()
+            estimate = (
+                memory.compressor.estimate
+                if memory.compressor is not None
+                else estimate_tokens
+            )
+            ui.show_context(
+                context=memory.get_context(),
+                token_count=sum(estimate(e.content) for e in entries),
+                entries=len(entries),
+                threshold=(
+                    memory.compressor.threshold
+                    if memory.compressor is not None
+                    else None
+                ),
+            )
+            continue
 
         try:
             with ui.working():
@@ -99,7 +117,7 @@ def main() -> None:
         except KeyboardInterrupt:
             ui.show_info("(interrompido)")
             continue
-        except (OpenCodeProviderError) as exc:
+        except OpenCodeProviderError as exc:
             ui.show_error(str(exc))
             continue
 
