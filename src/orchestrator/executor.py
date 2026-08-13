@@ -146,6 +146,14 @@ class Executor:
 
             ok = result.get("status") == "success" and "error" not in result
 
+            read_warn = None
+            if not ok and tool == "read_file":
+                ok = True
+                read_warn = (
+                    "read_file did not succeed (file may not exist); "
+                    "proceeding so the plan can recover by listing the directory"
+                )
+
             validated = None
             if ok and (tool in MUTATING_TOOLS or step.get("validate_after")):
                 validated = self._validate(tool, action, params, step, result)
@@ -160,6 +168,7 @@ class Executor:
                     "result": result,
                     "ok": ok,
                     "validated": validated,
+                    "read_warn": read_warn,
                 }
             )
 

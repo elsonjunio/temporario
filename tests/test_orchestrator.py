@@ -311,6 +311,23 @@ class TestExecutor(OrchestratorTestCase):
             "not found verbatim", result["trace"][0]["validated"]["expect_warn"]
         )
 
+    def test_read_missing_file_warns_not_fails(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "read_file",
+                "action": "read",
+                "params": {"file_path": str(self.root / "settings.py")},
+                "validate_after": False,
+                "description": "read settings",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn("may not exist", result["trace"][0]["read_warn"])
+
     def test_command_expect_missing_warns_not_fails(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)
