@@ -23,7 +23,7 @@ class OpenCodeProvider:
         api_key: str | None = None,
         model: str = "big-pickle",
         base_url: str = "https://opencode.ai/zen/v1",
-        timeout: int = 60,
+        timeout: int = 180,
     ):
         self.api_key = api_key or os.getenv("OPENCODE_API_KEY", "")
         self.model = model
