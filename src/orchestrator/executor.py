@@ -114,8 +114,15 @@ class Executor:
         for step in steps:
             tool = step["tool"]
             action = step["action"]
-            params = step.get("params", {})
+            params = dict(step.get("params", {}))
             description = step.get("description", "")
+
+            if (
+                tool == "run_command"
+                and not params.get("cwd")
+                and self.impact is not None
+            ):
+                params["cwd"] = self.impact.root
 
             self.undo_log.snapshot(tool, action, params)
             result = self.registry.dispatch(tool, action, **params)

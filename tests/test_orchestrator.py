@@ -234,6 +234,23 @@ class TestExecutor(OrchestratorTestCase):
         self.assertEqual(len(result["summary"]), 1)
         self.assertFalse(target.exists())
 
+    def test_run_command_defaults_cwd_to_root(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": "pwd"},
+                "validate_after": True,
+                "expect": str(self.root),
+                "description": "print working dir",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+
     def test_validation_expect_failure_rolls_back(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)
