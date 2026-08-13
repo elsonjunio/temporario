@@ -37,6 +37,7 @@ def create_orchestrator_tool(
         handlers={
             "run": orch.run,
             "discover": orch.discover,
+            "assess": orch.assess,
             "plan": orch.plan,
             "execute": orch.execute,
             "pending": orch.pending,

@@ -19,10 +19,12 @@ class Executor:
         registry: ToolRegistry,
         undo_log: UndoLog,
         memory: Memory | None = None,
+        impact: Any | None = None,
     ) -> None:
         self.registry = registry
         self.undo_log = undo_log
         self.memory = memory
+        self.impact = impact
 
     def _record(self, tool: str, action: str, params: dict, result: dict) -> None:
         if self.memory is not None:
@@ -37,12 +39,44 @@ class Executor:
             return params.get("path")
         return None
 
-    def _validate(self, tool: str, action: str, params: dict, step: dict) -> dict:
+    def _deep_validate(self, target: str) -> dict[str, Any] | None:
+        """Re-import changed Python files that back a registered tool module
+        and verify the module contract survived the mutation."""
+        if self.impact is None:
+            return None
+        profile = self.impact.profile(target)
+        if not (profile.get("exists") and profile.get("is_registered_tool")):
+            return None
+        contract = profile.get("contract", {})
+        if contract.get("import_error"):
+            return {"ok": False, "error": contract["import_error"]}
+        missing = profile.get("contract_missing", [])
+        if missing:
+            return {"ok": False, "missing": missing}
+        return {"ok": True, "missing": []}
+
+    def _validate(
+        self,
+        tool: str,
+        action: str,
+        params: dict,
+        step: dict,
+        result: dict,
+    ) -> dict:
         target = self._target_path(tool, action, params)
         expect = step.get("expect")
         if tool == "delete_file" and target is not None:
             exists = resolve_path(target).exists()
             return {"ok": not exists, "check": "path_removed", "path_exists": exists}
+
+        if tool == "run_command":
+            output = "\n".join(
+                str(result.get(key) or "") for key in ("stdout", "stderr")
+            )
+            ok = result.get("status") == "success"
+            if ok and expect:
+                ok = expect in output
+            return {"ok": ok, "check": "command_output", "expect": expect}
 
         if target is None:
             return {"ok": True, "check": "no_target"}
@@ -57,6 +91,17 @@ class Executor:
         ok = read.get("status") == "success"
         if ok and expect:
             ok = expect in content
+
+        deep = self._deep_validate(target)
+        if deep is not None:
+            ok = ok and deep["ok"]
+            return {
+                "ok": ok,
+                "check": "module_contract",
+                "expect": expect,
+                "contract": deep,
+                "content_length": len(content),
+            }
         return {
             "ok": ok,
             "check": "readable_text",
@@ -80,7 +125,7 @@ class Executor:
 
             validated = None
             if ok and (tool in MUTATING_TOOLS or step.get("validate_after")):
-                validated = self._validate(tool, action, params, step)
+                validated = self._validate(tool, action, params, step, result)
                 ok = validated["ok"]
 
             trace.append(

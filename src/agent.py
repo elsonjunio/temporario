@@ -140,6 +140,9 @@ class Agent:
             body = "\n".join(lines)
         else:
             body = str(summary or "")
+        impact = result.get("impact")
+        if impact:
+            body = f"{body}\n\n{impact}"
         return (
             "Plano pronto para execução. Aguardando sua aprovação.\n\n"
             f"{body}\n\n"

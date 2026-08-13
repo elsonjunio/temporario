@@ -422,6 +422,33 @@ class TestOrchestratorTool(OrchestratorTestCase):
         self.assertEqual(undo["status"], "rolled_back")
         self.assertEqual(target.read_text(), "before")
 
+    def test_awaiting_confirmation_includes_impact(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        result = orch._awaiting_confirmation(
+            [
+                {
+                    "tool": "patch_file",
+                    "action": "replace",
+                    "params": {"file_path": "x.py"},
+                    "description": "patch x.py",
+                }
+            ],
+            impact={
+                "targets": [
+                    {
+                        "path": "/tmp/x.py",
+                        "change_mode": "modify",
+                        "recommended_tool": "patch_file",
+                        "risks": ["must keep contract"],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertIn("Impact analysis", result["impact"])
+        self.assertIn("mode=modify", result["impact"])
+
     def test_unknown_action(self):
         provider = FakeProvider()
         orch = self._make_tool(provider)
