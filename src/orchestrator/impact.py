@@ -259,28 +259,45 @@ class ImpactAssessor:
 
     def check_plan_steps(self, steps: list[dict[str, Any]]) -> list[str]:
         issues: list[str] = []
+        known: set[str] = set()
         for index, step in enumerate(steps, start=1):
-            if step.get("tool") != "write_file":
-                continue
-            file_path = (step.get("params") or {}).get("file_path")
+            tool = step.get("tool")
+            params = step.get("params") or {}
+            file_path = params.get("file_path")
             if not file_path:
                 continue
-            rewrite = step.get("rewrite", (step.get("params") or {}).get("rewrite"))
-            prof = self.profile(file_path)
-            if not prof.get("exists"):
+            norm = str(resolve_path(file_path))
+            if tool == "read_file":
+                known.add(norm)
                 continue
-            if rewrite is False:
+            if tool == "write_file":
+                rewrite = step.get("rewrite", params.get("rewrite"))
+                prof = self.profile(file_path)
+                if prof.get("exists"):
+                    if rewrite is False:
+                        issues.append(
+                            f"step {index}: write_file over existing file "
+                            f"{prof['name']} with 'rewrite' explicitly false. The "
+                            "write tool refuses to touch an existing file then. "
+                            "Use patch_file for a targeted edit, or set "
+                            "'rewrite': true to overwrite the whole file."
+                        )
+                    elif prof.get("is_registered_tool") and not rewrite:
+                        issues.append(
+                            f"step {index}: write_file over existing registered "
+                            f"tool module {prof['name']} requires an explicit "
+                            "rewrite. Use patch_file instead, or set "
+                            "'rewrite': true and preserve "
+                            "MANUAL/SPEC/get_manual/dispatch."
+                        )
+                known.add(norm)
+                continue
+            if tool == "patch_file" and norm not in known:
                 issues.append(
-                    f"step {index}: write_file over existing file {prof['name']} "
-                    "with 'rewrite' explicitly false. The write tool refuses to "
-                    "touch an existing file then. Use patch_file for a targeted "
-                    "edit, or set 'rewrite': true to overwrite the whole file."
-                )
-            elif prof.get("is_registered_tool") and not rewrite:
-                issues.append(
-                    f"step {index}: write_file over existing registered tool module "
-                    f"{prof['name']} requires an explicit rewrite. Use patch_file "
-                    "instead, or set 'rewrite': true and preserve "
-                    "MANUAL/SPEC/get_manual/dispatch."
+                    f"step {index}: patch_file {params.get('action')} on "
+                    f"{file_path} without a prior read_file (or write_file) of "
+                    "that exact path in the plan. Patch anchors must be copied "
+                    "verbatim from the file, so add a read_file step for it "
+                    "first."
                 )
         return issues

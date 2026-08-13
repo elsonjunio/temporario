@@ -203,6 +203,14 @@ class TestPlanGuard(ImpactTestCase):
                     {
                         "steps": [
                             {
+                                "tool": "read_file",
+                                "action": "read",
+                                "params": {
+                                    "file_path": str(REPO / "src/tools/list_dir.py")
+                                },
+                                "description": "read list_dir",
+                            },
+                            {
                                 "tool": "patch_file",
                                 "action": "replace",
                                 "params": {
@@ -213,7 +221,7 @@ class TestPlanGuard(ImpactTestCase):
                                 "validate_after": True,
                                 "expect": "handle_list_dir",
                                 "description": "patch list_dir",
-                            }
+                            },
                         ]
                     }
                 )
