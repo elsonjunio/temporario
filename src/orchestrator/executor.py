@@ -75,7 +75,7 @@ class Executor:
             )
             ok = result.get("status") == "success"
             if ok and expect:
-                ok = expect in output
+                ok = expect.lower() in output.lower()
             return {"ok": ok, "check": "command_output", "expect": expect}
 
         if target is None:

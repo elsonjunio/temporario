@@ -251,6 +251,23 @@ class TestExecutor(OrchestratorTestCase):
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["trace"][0]["ok"])
 
+    def test_run_command_expect_is_case_insensitive(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "Reinitialized existing repository"'},
+                "validate_after": True,
+                "expect": "Initialized",
+                "description": "re-init repo",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+
     def test_write_file_expect_result_mode_passes(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)
