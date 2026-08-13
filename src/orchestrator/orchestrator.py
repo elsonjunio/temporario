@@ -289,6 +289,7 @@ class Orchestrator:
         self,
         steps: list[dict] | None = None,
         confirm: bool = False,
+        rollback_on_failure: bool = True,
     ) -> dict[str, Any]:
         plan = steps or (self.last_plan or {}).get("steps")
         if not plan:
@@ -298,7 +299,7 @@ class Orchestrator:
             }
         if not confirm:
             return self._awaiting_confirmation(plan)
-        return self.executor.execute(plan)
+        return self.executor.execute(plan, rollback_on_failure=rollback_on_failure)
 
     def validate(self, path: str) -> dict[str, Any]:
         result = self.registry.dispatch("read_file", "read", file_path=path)

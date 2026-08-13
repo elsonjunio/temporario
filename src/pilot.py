@@ -77,6 +77,7 @@ def _run_once(
     prompt: str,
     paths: list[str] | None,
     note: Any,
+    sticky: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     try:
         plan = orch.run(prompt, paths=paths)
@@ -95,7 +96,7 @@ def _run_once(
     note(_fmt_plan(plan))
     note(f"PLAN: {len(plan.get('steps', []))} steps; approving automatically.")
 
-    result = orch.execute(confirm=True)
+    result = orch.execute(confirm=True, rollback_on_failure=not sticky)
     if result.get("status") == "failed":
         note(
             f"[FAIL] execution failed on step {json.dumps(result.get('failed_step'), default=str)}"
@@ -198,14 +199,19 @@ def run_phase(
     prompt = base_prompt
     paths = base_paths
     repairs_left = max_repairs
-    for _ in range(1 + max_repairs):
-        ok, result = _run_once(orch, prompt, paths, note)
+    for attempt in range(1 + max_repairs):
+        sticky = attempt > 0
+        ok, result = _run_once(orch, prompt, paths, note, sticky=sticky)
         if ok:
             orch.abort()
             return True
         if not result:
             return False
         if repairs_left == 0:
+            note(
+                ">>> Repairs exhausted; keeping the partial fixes made during "
+                "repair attempts (no rollback) so the next run builds on them."
+            )
             return False
         repairs_left -= 1
         orch.abort()
@@ -223,14 +229,17 @@ def run_phase(
             if sres.get(key):
                 evidence += f"\n--- {key} ---\n{str(sres.get(key))[:2000]}"
         note(
-            f"\n>>> Repairing phase {index} ({name}) - repair #{max_repairs - repairs_left}"
+            f"\n>>> Repairing phase {index} ({name}) - repair #{attempt} "
+            "(mutations kept on failure)"
         )
         prompt = (
             "A execucao da fase falhou no passo abaixo. Diagnostique a CAUSA "
             "RAIZ lendo os arquivos envolvidos (use read_file nos arquivos "
             "apontados pelas mensagens de erro) e planeje APENAS a correcao "
             "minima necessaria. Ao final valide com o mesmo comando que "
-            "falhou. Passo que falhou:\n"
+            "falhou e, se houver mudancas no repositorio, inclua um passo "
+            "final rodando 'git add -A && git commit -m \"fix <nome da fase>\"' "
+            "com cwd na raiz do repositorio. Passo que falhou:\n"
             + json.dumps(detail, ensure_ascii=False)[:2000]
             + evidence
         )

@@ -125,7 +125,9 @@ class Executor:
             "content_length": len(content),
         }
 
-    def execute(self, steps: list[dict]) -> dict[str, Any]:
+    def execute(
+        self, steps: list[dict], rollback_on_failure: bool = True
+    ) -> dict[str, Any]:
         trace: list[dict[str, Any]] = []
         for step in steps:
             tool = step["tool"]
@@ -173,7 +175,10 @@ class Executor:
             )
 
             if not ok:
-                rollback = self.undo_log.rollback()
+                if rollback_on_failure:
+                    rollback = self.undo_log.rollback()
+                else:
+                    rollback = {"status": "kept", "reason": "rollback_on_failure=False"}
                 return {
                     "status": "failed",
                     "failed_step": step,
