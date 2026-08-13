@@ -1,2 +1,4 @@
 mcp
 python-dotenv
+prompt_toolkit
+rich
