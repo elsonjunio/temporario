@@ -260,6 +260,25 @@ class TestWriteFileDispatch(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertTrue(target.exists())
 
+    def test_rewrite_false_refuses_existing_file(self):
+        target = self.base / "hello.txt"
+        target.write_text("old")
+        result = write_file.dispatch(
+            "write", file_path=str(target), content="new", rewrite=False
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("rewrite=true", result["message"])
+        self.assertEqual(target.read_text(), "old")
+
+    def test_rewrite_true_overwrites(self):
+        target = self.base / "hello.txt"
+        target.write_text("old")
+        result = write_file.dispatch(
+            "write", file_path=str(target), content="new", rewrite=True
+        )
+        self.assertEqual(result["mode"], "overwritten")
+        self.assertEqual(target.read_text(), "new")
+
     def test_append(self):
         target = self.base / "log.txt"
         write_file.dispatch("append", file_path=str(target), content="one\n")

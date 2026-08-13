@@ -11,11 +11,25 @@ def handle_write_file(
     content: str,
     create_dirs: bool = True,
     encoding: str = "utf-8",
+    rewrite: bool = True,
 ) -> dict:
     """Create or overwrite a file. Skips the write when content is unchanged
-    and writes atomically to avoid leaving partial files behind."""
+    and writes atomically to avoid leaving partial files behind.
+
+    rewrite=False refuses to touch an existing file (use patch_file instead).
+    """
     root = resolve_path(file_path)
     existed = root.exists()
+
+    if existed and not rewrite:
+        return {
+            "status": "error",
+            "path": str(root),
+            "message": (
+                "file already exists; pass rewrite=true to overwrite it or "
+                "use patch_file for a targeted edit"
+            ),
+        }
 
     if existed:
         try:
@@ -81,6 +95,9 @@ MANUAL = (
     "      content (str, required): full text to write (replaces existing content).\n"
     "      create_dirs (bool, default true): create missing parent directories.\n"
     '      encoding (str, default "utf-8"): text encoding to use.\n'
+    "      rewrite (bool, default true): allow overwriting an existing file.\n"
+    "        Pass rewrite=false to refuse touching an existing file\n"
+    "        (use patch_file for targeted edits of existing files).\n"
     "    Returns: status plus mode (created, overwritten, unchanged) and byte count.\n"
     "    Efficient: identical content returns 'unchanged' without touching the file;\n"
     "    writes are atomic (temp file + rename), so no partial files.\n"
