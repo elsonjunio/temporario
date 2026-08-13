@@ -21,6 +21,7 @@ modelo grande (default `big-pickle` do OpenCode Zen), esta branch prioriza:
 ```bash
 cp .env.example .env   # configurar provedor/modelo (ver abaixo)
 .venv/bin/python src/main.py   # exige OPENCODE_API_KEY para o demo interativo
+.venv/bin/python src/bike.py   # variante com UI visual (Rich + prompt_toolkit)
 ```
 
 ## Configuração (`.env`)
@@ -51,6 +52,10 @@ solto); só em último caso faz um único re-prompt pedindo JSON estrito.
   → executar → validar), opcional.
 - `src/agent.py` — loop agente: prompt de config → `provider.infer` →
   `parse_tool_call` → `registry.dispatch`.
+- `src/bike.py` — ponto de entrada com UI visual (Rich + prompt_toolkit);
+  usa o mesmo núcleo do `main.py` e funciona em Linux e Windows.
+- `src/ui.py` — camada de apresentação: input por prompt_toolkit, saída
+  estilizada por Rich.
 - `src/providers/opencode.py` — cliente OpenAI-compatible para OpenCode Zen.
 - `src/context.py` / `src/memory.py` — compressão de contexto e memória.
 - `src/utils.py` — prompt de configuração, parsing de chamadas, `classify_followup`.
