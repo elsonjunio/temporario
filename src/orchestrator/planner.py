@@ -75,6 +75,11 @@ class Planner:
             "patch_file (replace or apply). Use write_file ONLY to create NEW "
             "files (change_mode 'new'), or for an intentional full rewrite in "
             'which case set "rewrite": true on the step.\n'
+            "- patch_file 'replace' requires the old text copied VERBATIM from "
+            "the file content (add a read_file step for the target first). When "
+            "most of the file body changes, or you are unsure of the exact old "
+            "anchor, prefer write_file with rewrite:true and the full new "
+            "content instead of a fragile patch.\n"
             "- GREENFIELD: targets seeded with type 'new_file' do not exist yet "
             "and must be created with write_file using the exact path from the "
             "evidence. Create parent directories implicitly via write_file "
