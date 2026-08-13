@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -15,10 +16,42 @@ from src.tools.registry import build_default_registry
 from src.utils import build_environment_info
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="OpenCode agent demo / driver")
+    parser.add_argument(
+        "--root",
+        default=os.getcwd(),
+        help="workspace root for the agent (default: current directory). "
+        "The process chdirs into it so run_command lands in the project.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=5,
+        help="max tool iterations per agent turn (default: 5).",
+    )
+    parser.add_argument(
+        "--max-plan-steps",
+        type=int,
+        default=8,
+        help="max steps per orchestrator plan (default: 8).",
+    )
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="run a single non-interactive prompt and exit (useful for tests "
+        "and scripting phases).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     load_dotenv()
 
-    workspace = os.path.abspath(os.getcwd())
+    root = os.path.abspath(args.root)
+    os.chdir(root)
+    workspace = root
     print(f"Workspace: {workspace}")
 
     provider = OpenCodeProvider(model="big-pickle")
@@ -38,6 +71,7 @@ def main() -> None:
         provider,
         memory,
         root=workspace,
+        max_plan_steps=args.max_plan_steps,
     )
     registry.register(orchestrator.name, orchestrator)
 
@@ -45,8 +79,17 @@ def main() -> None:
         provider=provider,
         memory=memory,
         registry=registry,
+        max_iterations=args.max_iterations,
         environment=build_environment_info(workspace=workspace),
     )
+
+    if args.prompt:
+        try:
+            print("Agent:", agent.run(args.prompt, max_iterations=args.max_iterations))
+        except ProviderError as exc:
+            print(f"Provider error: {exc}")
+            raise SystemExit(1)
+        return
 
     print(f"--- Agent chat (model={provider.model}) ---")
     print("Type a question, or /quit to exit.\n")
@@ -63,7 +106,7 @@ def main() -> None:
             break
 
         try:
-            answer = agent.run(question)
+            answer = agent.run(question, max_iterations=args.max_iterations)
         except ProviderError as exc:
             print(f"Provider error: {exc}")
             continue

@@ -64,6 +64,76 @@ class TestDiscovery(OrchestratorTestCase):
         self.assertEqual(result["count"], 1)
 
 
+class TestDiscoveryGreenfield(OrchestratorTestCase):
+    def test_seed_paths_creates_new_file_candidates(self):
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover(
+            "create the backend skeleton",
+            seed_paths=["backend/app/main.py", "frontend/package.json"],
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["count"], 2)
+        types = {c["path"]: c["type"] for c in result["candidates"]}
+        self.assertEqual(
+            types[str((self.root / "backend/app/main.py").resolve())],
+            "new_file",
+        )
+        self.assertEqual(
+            types[str((self.root / "frontend/package.json").resolve())],
+            "new_file",
+        )
+        self.assertIn("seeded", result["reason"])
+
+    def test_seed_paths_marks_existing_paths_as_files(self):
+        (self.root / "README.md").write_text("hi\n")
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover("edit readme", seed_paths=["README.md"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["candidates"][0]["type"], "file")
+
+    def test_seed_paths_dedupes(self):
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover("x", seed_paths=["a.txt", "a.txt", "b.txt"])
+        self.assertEqual(result["count"], 2)
+
+
+class TestOrchestratorGreenfield(OrchestratorTestCase):
+    def _steps_json(self, *file_paths):
+        steps = []
+        for path in file_paths:
+            steps.append(
+                {
+                    "tool": "write_file",
+                    "action": "write",
+                    "params": {"file_path": str(path), "content": "x"},
+                    "validate_after": True,
+                    "description": f"create {path.name}",
+                }
+            )
+        return json.dumps({"steps": steps})
+
+    def test_plan_with_paths_bypasses_keyword_search(self):
+        provider = FakeProvider([self._steps_json(self.root / "backend" / "main.py")])
+        orch = self._make_orch(provider)
+        plan = orch.plan(
+            "create backend skeleton",
+            paths=["backend/main.py", "backend/requirements.txt"],
+        )
+        self.assertEqual(plan["status"], "ok")
+        evidence = orch.last_evidence
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(evidence["count"], 2)
+        self.assertTrue(all(c["type"] == "new_file" for c in evidence["candidates"]))
+
+    def test_run_with_paths_returns_awaiting_confirmation_with_impact(self):
+        provider = FakeProvider([self._steps_json(self.root / "backend" / "main.py")])
+        orch = self._make_orch(provider)
+        result = orch.run("create backend skeleton", paths=["backend/main.py"])
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertIn("Impact analysis", result["impact"])
+        self.assertIn("mode=new", result["impact"])
+
+
 class TestPlanner(OrchestratorTestCase):
     def test_parses_plan(self):
         provider = FakeProvider(
