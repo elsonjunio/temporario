@@ -176,7 +176,13 @@ def handle_replace(
     if occurrences == 0:
         return {
             "status": "error",
-            "message": "old text not found in file.",
+            "message": (
+                "old text not found in file. Copy the 'old' text EXACTLY as it "
+                "appears in the current file (re-read the file first); do not "
+                "guess or paraphrase it. If you cannot produce an exact anchor, "
+                "use write_file with rewrite:true to write the whole corrected "
+                "file instead."
+            ),
             "path": str(root),
         }
 
