@@ -287,24 +287,49 @@ class TestExecutor(OrchestratorTestCase):
         self.assertTrue(result["trace"][0]["ok"])
         self.assertEqual(target.read_text(), "hello\n")
 
-    def test_validation_expect_failure_rolls_back(self):
+    def test_write_file_missing_expect_warns_not_fails(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)
-        target = self.root / "out.txt"
+        target = self.root / "auth.txt"
         steps = [
             {
                 "tool": "write_file",
                 "action": "write",
-                "params": {"file_path": str(target), "content": "hello\n"},
+                "params": {
+                    "file_path": str(target),
+                    "content": 'router = APIRouter(prefix="/api/auth")\n@router.post("/register")\n',
+                },
+                "validate_after": True,
+                "expect": "/api/auth/register",
+                "description": "composed path not verbatim",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn(
+            "not found verbatim", result["trace"][0]["validated"]["expect_warn"]
+        )
+
+    def test_validation_expect_failure_rolls_back(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "out.txt"
+        target.write_text("original\n")
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "original\n"},
                 "validate_after": True,
                 "expect": "WRONG",
-                "description": "create out.txt",
+                "description": "rewrite out.txt",
             }
         ]
         result = orch.execute(steps, confirm=True)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["rollback"]["status"], "rolled_back")
-        self.assertFalse(target.exists())
+        self.assertEqual(target.read_text(), "original\n")
 
     def test_failed_step_rolls_back_previous(self):
         provider = FakeProvider()

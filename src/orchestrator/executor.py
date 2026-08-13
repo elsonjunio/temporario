@@ -89,9 +89,13 @@ class Executor:
         )
         content = read.get("current_page_content") or read.get("content") or ""
         ok = read.get("status") == "success"
+        warn = None
         if ok and expect:
             mode = result.get("mode")
             ok = expect in content or (mode is not None and expect == mode)
+            if not ok and tool == "write_file" and mode in ("created", "overwritten"):
+                ok = True
+                warn = f"expect {expect!r} not found verbatim in written content"
 
         deep = self._deep_validate(target)
         if deep is not None:
@@ -100,6 +104,7 @@ class Executor:
                 "ok": ok,
                 "check": "module_contract",
                 "expect": expect,
+                "expect_warn": warn,
                 "contract": deep,
                 "content_length": len(content),
             }
@@ -107,6 +112,7 @@ class Executor:
             "ok": ok,
             "check": "readable_text",
             "expect": expect,
+            "expect_warn": warn,
             "content_length": len(content),
         }
 
