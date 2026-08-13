@@ -17,7 +17,10 @@ class FakeProvider:
 
     def infer(self, user_prompt, config, **settings):
         self.calls.append((user_prompt, config))
-        return self.responses.pop(0)
+        if self.responses:
+            self.last = self.responses.pop(0)
+            return self.last
+        return self.last
 
 
 class OrchestratorTestCase(unittest.TestCase):

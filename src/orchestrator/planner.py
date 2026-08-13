@@ -21,10 +21,12 @@ class Planner:
         provider: Any,
         registry: ToolRegistry,
         max_plan_steps: int = 8,
+        max_plan_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.max_plan_steps = max_plan_steps
+        self.max_plan_retries = max_plan_retries
 
     def build_prompt(self, request: str, evidence: dict[str, Any]) -> str:
         manual = self.registry.get_manual()
@@ -38,6 +40,9 @@ class Planner:
             '{"tool": "<tool>", "action": "<action>", "params": {...}, '
             '"validate_after": true, "expect": "<optional substring to verify", '
             '"description": "..."}\n\n'
+            "The response must be STRICT, VALID JSON: never put a raw newline "
+            "or tab inside a string value -- escape them (\\\\n); keep every "
+            "command string single-line.\n"
             "expect semantics: for write_file/patch_file it is a substring "
             "expected in the written file content, or a result keyword "
             '("created"/"overwritten"/"unchanged"/"applied"). For run_command '
@@ -129,19 +134,25 @@ class Planner:
 
     def plan(self, request: str, evidence: dict[str, Any]) -> dict[str, Any]:
         prompt = self.build_prompt(request, evidence)
-        raw = self.provider.infer(prompt, PLANNING_SYSTEM)
+        attempts = 0
+        while True:
+            attempts += 1
+            raw = self.provider.infer(prompt, PLANNING_SYSTEM)
 
-        data = extract_json_object(raw)
-        if not isinstance(data, dict) or "steps" not in data:
+            data = extract_json_object(raw)
+            if isinstance(data, dict) and "steps" in data:
+                steps = data["steps"]
+                problem = self._validate_steps(steps)
+                if problem is None:
+                    return {"status": "ok", "steps": steps}
+                if attempts < self.max_plan_retries:
+                    continue
+                return {"status": "error", "message": problem, "raw": raw[:500]}
+
+            if attempts < self.max_plan_retries:
+                continue
             return {
                 "status": "error",
                 "message": "provider did not return a JSON plan with 'steps'",
                 "raw": raw[:500],
             }
-
-        steps = data["steps"]
-        problem = self._validate_steps(steps)
-        if problem is not None:
-            return {"status": "error", "message": problem, "raw": raw[:500]}
-
-        return {"status": "ok", "steps": steps}
