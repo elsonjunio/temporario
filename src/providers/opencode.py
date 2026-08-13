@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -23,12 +24,14 @@ class OpenCodeProvider:
         api_key: str | None = None,
         model: str = "big-pickle",
         base_url: str = "https://opencode.ai/zen/v1",
-        timeout: int = 180,
+        timeout: int = 300,
+        attempts: int = 3,
     ):
         self.api_key = api_key or os.getenv("OPENCODE_API_KEY", "")
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.attempts = attempts
 
     @property
     def _chat_url(self) -> str:
@@ -60,13 +63,25 @@ class OpenCodeProvider:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+            return payload
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ProviderError(f"OpenCode Zen HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ProviderError(f"OpenCode Zen request failed: {exc.reason}") from exc
-
-        return payload
+        except (TimeoutError, urllib.error.URLError) as exc:
+            last_error = exc
+            for attempt in range(self.attempts - 1):
+                time.sleep(2 * (attempt + 1))
+                try:
+                    with urllib.request.urlopen(
+                        request, timeout=self.timeout
+                    ) as response:
+                        return json.loads(response.read().decode("utf-8"))
+                except (TimeoutError, urllib.error.URLError) as retry_exc:
+                    last_error = retry_exc
+            raise ProviderError(
+                f"OpenCode Zen request failed after {self.attempts} attempts: "
+                f"{last_error}"
+            ) from last_error
 
     def infer(self, user_prompt: str, config: str, **settings: Any) -> str:
         """Send a two-part prompt: the user message plus the configuration prompt.
