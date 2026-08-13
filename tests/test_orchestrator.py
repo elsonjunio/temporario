@@ -251,6 +251,25 @@ class TestExecutor(OrchestratorTestCase):
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["trace"][0]["ok"])
 
+    def test_write_file_expect_result_mode_passes(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "x.txt"
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "hello\n"},
+                "validate_after": True,
+                "expect": "created",
+                "description": "create x.txt",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertEqual(target.read_text(), "hello\n")
+
     def test_validation_expect_failure_rolls_back(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)

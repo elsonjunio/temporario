@@ -38,6 +38,12 @@ class Planner:
             '{"tool": "<tool>", "action": "<action>", "params": {...}, '
             '"validate_after": true, "expect": "<optional substring to verify", '
             '"description": "..."}\n\n'
+            "expect semantics: for write_file/patch_file it is a substring "
+            "expected in the written file content, or a result keyword "
+            '("created"/"overwritten"/"unchanged"/"applied"). For run_command '
+            "it is a substring of stdout/stderr. Set validate_after=true only "
+            "when a validation matters; the step fails and rolls back if "
+            "expect is set but not found.\n"
             "Rules:\n"
             "- Use only the available tools listed above.\n"
             "- Use concrete file paths from the discovery evidence.\n"

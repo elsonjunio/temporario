@@ -90,7 +90,8 @@ class Executor:
         content = read.get("current_page_content") or read.get("content") or ""
         ok = read.get("status") == "success"
         if ok and expect:
-            ok = expect in content
+            mode = result.get("mode")
+            ok = expect in content or (mode is not None and expect == mode)
 
         deep = self._deep_validate(target)
         if deep is not None:
