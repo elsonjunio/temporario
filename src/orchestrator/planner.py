@@ -28,9 +28,16 @@ class Planner:
         self.max_plan_steps = max_plan_steps
         self.max_plan_retries = max_plan_retries
 
-    def build_prompt(self, request: str, evidence: dict[str, Any]) -> str:
+    def build_prompt(
+        self, request: str, evidence: dict[str, Any], feedback: str | None = None
+    ) -> str:
         manual = self.registry.get_manual()
         evidence_block = json.dumps(evidence, ensure_ascii=False, indent=2)
+        feedback_block = (
+            f"\n\nREJECTION FEEDBACK for your previous plan (fix ALL of it):\n{feedback}\n"
+            if feedback
+            else ""
+        )
         return (
             "Plan a filesystem modification.\n\n"
             f"Request:\n{request}\n\n"
@@ -71,6 +78,17 @@ class Planner:
             "files and REUSE their exact class/enum/field/endpoint names and "
             "values; never invent new ones. When the SPEC conflicts with "
             "existing code, follow the SPEC and call out the deviation.\n"
+            "- When planning a consumer of an existing backend API (frontend "
+            "services, components, guards), add read_file steps for the actual "
+            "backend router/schema files and derive the EXACT url paths, "
+            "request payloads and response field names from that committed "
+            "code. The committed backend is the source of truth for what the "
+            "API returns (auth/login returns e.g. access_token, not token). "
+            "NEVER invent endpoints, payloads or response shapes. If a "
+            "capability the UI needs is missing from the backend (e.g. no "
+            "endpoint listing customers), add a step that CREATES it in the "
+            "backend (new endpoint + registration) instead of faking it "
+            "client-side.\n"
             "- EXISTING targets (change_mode 'modify') must be edited with "
             "patch_file (replace or apply). Use write_file ONLY to create NEW "
             "files (change_mode 'new'), or for an intentional full rewrite in "
@@ -137,8 +155,13 @@ class Planner:
                 return f"step {i}: params must be an object"
         return None
 
-    def plan(self, request: str, evidence: dict[str, Any]) -> dict[str, Any]:
-        prompt = self.build_prompt(request, evidence)
+    def plan(
+        self,
+        request: str,
+        evidence: dict[str, Any],
+        feedback: str | None = None,
+    ) -> dict[str, Any]:
+        prompt = self.build_prompt(request, evidence, feedback=feedback)
         attempts = 0
         while True:
             attempts += 1

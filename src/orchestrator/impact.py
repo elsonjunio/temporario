@@ -266,15 +266,18 @@ class ImpactAssessor:
             if not file_path:
                 continue
             prof = self.profile(file_path)
-            if (
-                prof.get("exists")
-                and prof.get("is_registered_tool")
-                and not step.get("rewrite")
-            ):
-                issues.append(
-                    f"step {index}: write_file over existing registered tool module "
-                    f"{prof['name']} requires an explicit rewrite. Use patch_file "
-                    "instead, or set 'rewrite': true and preserve "
-                    "MANUAL/SPEC/get_manual/dispatch."
-                )
+            if prof.get("exists") and not step.get("rewrite"):
+                if prof.get("is_registered_tool"):
+                    issues.append(
+                        f"step {index}: write_file over existing registered tool module "
+                        f"{prof['name']} requires an explicit rewrite. Use patch_file "
+                        "instead, or set 'rewrite': true and preserve "
+                        "MANUAL/SPEC/get_manual/dispatch."
+                    )
+                else:
+                    issues.append(
+                        f"step {index}: write_file over existing file {prof['name']} "
+                        "without 'rewrite': true. Use patch_file for a targeted edit, "
+                        "or set 'rewrite': true to overwrite the whole file."
+                    )
         return issues

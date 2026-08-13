@@ -597,6 +597,7 @@ class TestOrchestratorTool(OrchestratorTestCase):
                                     "file_path": str(target),
                                     "content": "after\n",
                                 },
+                                "rewrite": True,
                             }
                         ]
                     }

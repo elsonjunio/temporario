@@ -166,15 +166,25 @@ class Orchestrator:
         impact = self.impact.assess(request, evidence.get("candidates", []))
         self.last_impact = impact
 
-        plan = self.planner.plan(request, {**evidence, "impact": impact})
-        if plan.get("status") == "ok":
+        feedback: str | None = None
+        attempts = 0
+        while True:
+            attempts += 1
+            plan = self.planner.plan(
+                request, {**evidence, "impact": impact}, feedback=feedback
+            )
+            if plan.get("status") != "ok":
+                return plan
             issues = self.impact.check_plan_steps(plan.get("steps", []))
-            if issues:
+            if not issues:
+                break
+            if attempts >= self.planner.max_plan_retries:
                 return {
                     "status": "error",
                     "message": "\n".join(issues),
                     "plan": plan,
                 }
+            feedback = "; ".join(issues)
         self.last_plan = plan
         self.last_request = request
         return plan

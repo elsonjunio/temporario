@@ -137,6 +137,7 @@ class TestPlanGuard(ImpactTestCase):
                     }
                 )
             ]
+            * 2
         )
         orch = Orchestrator(self.registry, provider, root=str(REPO))
         plan = orch.plan("add exclude to list_dir", terms=["list_dir"])
@@ -163,6 +164,7 @@ class TestPlanGuard(ImpactTestCase):
                     }
                 )
             ]
+            * 2
         )
         orch = Orchestrator(self.registry, provider, root=str(REPO))
         result = orch.run("add exclude to list_dir", terms=["list_dir"])
