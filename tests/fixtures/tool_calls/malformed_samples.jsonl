@@ -1,0 +1,3 @@
+{"input": "<|tool_call>call:read_file\n{\"file_path\": \"app.py\"}\n", "tool": "read_file", "action": "read"}
+{"input": "<|tool_call>call:read_file\n{\"file_path\": \"dados/config.json\"}\n", "tool": "read_file", "action": "read"}
+{"input": "<|tool_call>call:run_command\n{\"command\": \"ls -la\"}\n", "tool": "run_command", "action": "run"}
