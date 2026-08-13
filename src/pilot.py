@@ -233,13 +233,19 @@ def run_phase(
             "(mutations kept on failure)"
         )
         prompt = (
-            "A execucao da fase falhou no passo abaixo. Diagnostique a CAUSA "
-            "RAIZ lendo os arquivos envolvidos (use read_file nos arquivos "
-            "apontados pelas mensagens de erro) e planeje APENAS a correcao "
-            "minima necessaria. Ao final valide com o mesmo comando que "
-            "falhou e, se houver mudancas no repositorio, inclua um passo "
-            "final rodando 'git add -A && git commit -m \"fix <nome da fase>\"' "
-            "com cwd na raiz do repositorio. Passo que falhou:\n"
+            "A execucao da fase abaixo falhou. Diagnostique a CAUSA RAIZ "
+            "lendo os arquivos envolvidos (use read_file nos arquivos "
+            "apontados pelas mensagens de erro) e planeje a correcao minima "
+            "necessaria. IMPORTANTE: depois de corrigir, o seu plano deve "
+            "COMPLETAR TODA A FASE, reexecutando todas as verificacoes do "
+            "prompt original (testes, subir o backend, smoke test, build do "
+            "frontend, atualizacao de README) e, ao final, se houver "
+            "mudancas no repositorio, rodar 'git add -A && git commit -m "
+            '"<nome da fase>"\' com cwd na raiz do repositorio. NAO pare '
+            "apos corrigir um unico passo.\n\n"
+            "PROMPT ORIGINAL DA FASE:\n"
+            + base_prompt
+            + "\n\nPASSO QUE FALHOU:\n"
             + json.dumps(detail, ensure_ascii=False)[:2000]
             + evidence
         )
