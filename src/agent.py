@@ -95,14 +95,9 @@ class Agent:
                     "tool": call["tool"],
                     "preview": result,
                 }
-                current_prompt = (
-                    "The tool is awaiting user confirmation and nothing has "
-                    "been executed yet. Stop here and present the plan below "
-                    "to the user, asking whether to proceed. Do not execute "
-                    "anything yourself.\n"
-                    f"Plan:\n{result.get('summary')}"
-                )
-                continue
+                pending_message = self._format_awaiting_message(result)
+                self.memory.add_assistant(pending_message)
+                return pending_message
 
             if result.get("status") in ("aborted", "failed"):
                 self._pending_call = None
@@ -120,6 +115,37 @@ class Agent:
         )
         self.memory.add_assistant(final)
         return final
+
+    @staticmethod
+    def _format_awaiting_message(result: dict[str, Any]) -> str:
+        """Render an ``awaiting_confirmation`` result as user-facing text.
+
+        The summary is usually a list of plan steps; plain strings are kept
+        as-is. The relay is deterministic so the plan always reaches the user
+        without a fragile model round-trip.
+        """
+        summary = result.get("summary")
+        if isinstance(summary, list):
+            lines = []
+            for step in summary:
+                if not isinstance(step, dict):
+                    continue
+                tool = step.get("tool") or "?"
+                action = step.get("action") or ""
+                desc = step.get("description") or f"{tool} {action}".strip()
+                lines.append(f"{step.get('step', '?')}. {desc}".strip())
+                params = step.get("params")
+                if params:
+                    lines.append(f"   params: {params}")
+            body = "\n".join(lines)
+        else:
+            body = str(summary or "")
+        return (
+            "Plano pronto para execução. Aguardando sua aprovação.\n\n"
+            f"{body}\n\n"
+            'Responda "sim" para aprovar, "não" para cancelar, ou '
+            "descreva as mudanças desejadas."
+        )
 
     def _resume_pending(self) -> str:
         """Resume the pending plan deterministically (no model round-trip)."""

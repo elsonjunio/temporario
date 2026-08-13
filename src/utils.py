@@ -17,12 +17,12 @@ DEFAULT_INSTRUCTIONS = (
     "```\n"
     "The user message that follows will contain the tool result. Keep issuing "
     "tool calls until you can answer, then reply without a JSON block.\n"
-    "Confirmation flow: when a tool returns 'awaiting_confirmation', stop and "
-    "relay the plan to the user, asking whether to proceed; never execute the "
-    "plan yourself. When the user approves, resume through the tool's confirm "
-    "mechanism (e.g. orchestrator execute with confirm=true) -- do not "
-    "re-plan the same request and do not switch to other tools for the same "
-    "task."
+    "Confirmation flow: when a tool returns 'awaiting_confirmation', stop "
+    "immediately and call no more tools; the plan is relayed to the user "
+    "automatically. Never execute the plan yourself. When the user approves, "
+    "resume through the tool's confirm mechanism (e.g. orchestrator execute "
+    "with confirm=true) -- do not re-plan the same request and do not switch "
+    "to other tools for the same task."
 )
 
 _FENCED_BLOCK_RE = re.compile(

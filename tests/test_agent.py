@@ -146,25 +146,28 @@ class TestConfirmationFlow(unittest.TestCase):
         agent.run("crie out.txt")
         return agent, orch
 
-    def test_awaiting_confirmation_marks_pending(self):
+    def test_awaiting_confirmation_returns_plan_deterministically(self):
         provider = FakeProvider(
             [
                 '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
-                "Plano pronto, posso executar?",
             ]
         )
         agent, orch = self._agent_with_orchestrator(provider)
         result = agent.run("crie out.txt")
-        self.assertIn("Plano pronto", result)
+        self.assertIn("write out.txt", result)
+        self.assertIn("Aguardando sua aprovação", result)
         self.assertEqual(orch.calls[0][0], "run")
+        self.assertEqual(len(orch.calls), 1)
+        self.assertEqual(len(provider.calls), 1)
         self.assertIsNotNone(agent._pending_call)
         self.assertIn("awaiting", agent._pending_call["preview"]["status"])
+        history = agent.memory.get_history()
+        self.assertIn("Aguardando sua aprovação", history[-1]["content"])
 
     def test_approval_resumes_without_model_guess(self):
         provider = FakeProvider(
             [
                 '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
-                "Plano pronto, posso executar?",
                 "Pronto, executei.",
             ]
         )
@@ -181,7 +184,6 @@ class TestConfirmationFlow(unittest.TestCase):
         provider = FakeProvider(
             [
                 '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "x"}}\n```',
-                "Plano pronto, posso executar?",
                 '```json\n{"tool": "orchestrator", "action": "execute", "params": {"confirm": true}}\n```',
                 "Terminei.",
             ]
@@ -200,7 +202,6 @@ class TestConfirmationFlow(unittest.TestCase):
         provider = FakeProvider(
             [
                 '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "x"}}\n```',
-                "Plano pronto?",
             ]
         )
         agent, orch = self._agent_with_orchestrator(provider)
@@ -209,13 +210,12 @@ class TestConfirmationFlow(unittest.TestCase):
         self.assertIn("cancelled", result)
         self.assertEqual(orch.calls[1], ("abort", {}))
         self.assertIsNone(agent._pending_call)
-        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(len(provider.calls), 1)
 
     def test_conditional_approval_goes_to_model(self):
         provider = FakeProvider(
             [
                 '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "crie out.txt"}}\n```',
-                "Plano pronto, posso executar?",
                 '```json\n{"tool": "orchestrator", "action": "execute", "params": {"confirm": true}}\n```',
                 "Executei com as mudanças.",
             ]
@@ -224,10 +224,24 @@ class TestConfirmationFlow(unittest.TestCase):
         agent.run("crie out.txt")
         result = agent.run("sim, mas troque o nome")
         self.assertEqual(result, "Executei com as mudanças.")
-        guidance = provider.calls[2][0]
+        guidance = provider.calls[1][0]
         self.assertIn("awaiting confirmation", guidance)
         self.assertIn("sim, mas troque o nome", guidance)
         self.assertEqual(orch.calls[1], ("execute", {"confirm": True}))
+
+    def test_awaiting_on_last_iteration_still_returns_plan(self):
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "orchestrator", "action": "run", "params": {"request": "x"}}\n```',
+            ]
+        )
+        agent, orch = self._agent_with_orchestrator(provider)
+        agent.max_iterations = 1
+        result = agent.run("x")
+        self.assertIn("write out.txt", result)
+        self.assertNotIn("maximum", result)
+        self.assertEqual(len(orch.calls), 1)
+        self.assertIsNotNone(agent._pending_call)
 
 
 if __name__ == "__main__":
