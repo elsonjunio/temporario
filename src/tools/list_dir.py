@@ -69,6 +69,7 @@ def handle_list_dir(
         walk(root)
 
         return {
+            "status": "success",
             "path": str(root),
             "max_depth": max_depth,
             "tree": tree_lines,
@@ -125,6 +126,7 @@ def handle_list_dir(
     page_items = items[start:end]
 
     return {
+        "status": "success",
         "path": str(root),
         "page": page,
         "page_size": page_size,
