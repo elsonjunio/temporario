@@ -111,15 +111,26 @@ def _php_runner(root: Path) -> str | None:
     return "phpunit"
 
 
-@_register_runner("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
+@_register_runner(
+    "pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "requirements.txt"
+)
 def _python_runner(root: Path) -> str | None:
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         text = pyproject.read_text(encoding="utf-8", errors="replace")
         if "[tool.pytest" in text or "pytest" in text:
-            return "pytest"
-    if (root / "pytest.ini").exists() or (root / "setup.cfg").exists():
-        return "pytest"
+            return "python -m pytest"
+    for marker in ("pytest.ini", "setup.cfg", "tox.ini"):
+        if (root / marker).exists():
+            return "python -m pytest"
+    for req in [root / "requirements.txt", root / "requirements-dev.txt"] + list(
+        root.rglob("requirements*.txt")
+    ):
+        if not req.exists():
+            continue
+        text = req.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"(?m)^\s*pytest", text):
+            return "python -m pytest"
     return None
 
 
@@ -161,7 +172,7 @@ def _runner_command(profile: LanguageProfile, root: Path) -> str | None:
                 return cmd
     if profile is PYTHON:
         venv = root / ".venv" / "bin" / "python"
-        python = str(venv) if venv.exists() else "python3"
+        python = str(venv) if venv.exists() else "python"
         return f"{python} -m unittest"
     return None
 
@@ -172,7 +183,13 @@ PYTHON = LanguageProfile(
     test_dirs=("tests", "test"),
     test_globs=("test_*.py", "*_test.py"),
     test_patterns=("test_{stem}.py", "{stem}_test.py"),
-    tool_markers=("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"),
+    tool_markers=(
+        "pyproject.toml",
+        "pytest.ini",
+        "setup.cfg",
+        "tox.ini",
+        "requirements.txt",
+    ),
     framework="pytest",
     success_marker="passed",
     command_template="{runner} {files}",
