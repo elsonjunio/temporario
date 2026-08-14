@@ -398,6 +398,191 @@ class TestExecutor(OrchestratorTestCase):
         self.assertFalse(target.exists())
 
 
+class TestPlanAnchorFeedback(OrchestratorTestCase):
+    def test_plan_retries_when_anchor_missing(self):
+        target = str(self.root / "notes.txt")
+        (self.root / "notes.txt").write_text("hello\nworld\n")
+        bad = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": target},
+                        "description": "read notes",
+                    },
+                    {
+                        "tool": "patch_file",
+                        "action": "replace",
+                        "params": {"file_path": target, "old": "invented", "new": "x"},
+                        "description": "patch notes",
+                    },
+                ]
+            }
+        )
+        good = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": target},
+                        "description": "read notes",
+                    },
+                    {
+                        "tool": "patch_file",
+                        "action": "replace",
+                        "params": {"file_path": target, "old": "world", "new": "x"},
+                        "description": "patch notes",
+                    },
+                ]
+            }
+        )
+        provider = FakeProvider([bad, good])
+        orch = self._make_orch(provider)
+        plan = orch.plan("change notes", terms=["notes"])
+        self.assertEqual(plan["status"], "ok")
+        self.assertNotIn("REJECTION FEEDBACK", provider.calls[0][0])
+        self.assertIn("REJECTION FEEDBACK", provider.calls[1][0])
+        self.assertEqual(plan["steps"][1]["params"]["old"], "world")
+
+    def test_plan_error_when_anchor_never_fixed(self):
+        target = str(self.root / "notes.txt")
+        (self.root / "notes.txt").write_text("hello\nworld\n")
+        bad = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": target},
+                        "description": "read notes",
+                    },
+                    {
+                        "tool": "patch_file",
+                        "action": "replace",
+                        "params": {"file_path": target, "old": "invented", "new": "x"},
+                        "description": "patch notes",
+                    },
+                ]
+            }
+        )
+        provider = FakeProvider([bad, bad])
+        orch = self._make_orch(provider)
+        result = orch.plan("change notes", terms=["notes"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("old", result["message"])
+
+
+class TestExecRetry(OrchestratorTestCase):
+    def test_retry_replans_and_succeeds_after_patch_failure(self):
+        target = str(self.root / "notes.txt")
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        orch.last_request = "fix notes"
+        notes_path = self.root / "notes.txt"
+        orch.last_evidence = {
+            "status": "ok",
+            "request": "fix notes",
+            "terms": [],
+            "count": 1,
+            "candidates": [
+                {"name": "notes.txt", "path": target, "type": "file", "snippet": ""}
+            ],
+        }
+        orch.last_impact = {"request": "fix notes", "targets": []}
+        fixed = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "write_file",
+                        "action": "write",
+                        "params": {"file_path": target, "content": "hello\nworld\n"},
+                        "description": "create notes",
+                    },
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": target},
+                        "description": "read notes",
+                    },
+                    {
+                        "tool": "patch_file",
+                        "action": "replace",
+                        "params": {
+                            "file_path": target,
+                            "old": "world",
+                            "new": "everyone",
+                        },
+                        "description": "patch notes",
+                    },
+                ]
+            }
+        )
+        provider.responses = [fixed]
+        bad_steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": target, "content": "hello\nworld\n"},
+                "description": "create notes",
+            },
+            {
+                "tool": "patch_file",
+                "action": "replace",
+                "params": {"file_path": target, "old": "invented", "new": "x"},
+                "description": "patch notes",
+            },
+        ]
+        result = orch.execute(bad_steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertIn("EXECUTION FAILURE", provider.calls[0][0])
+        self.assertEqual(notes_path.read_text(), "hello\neveryone\n")
+
+    def test_no_evidence_returns_failure_with_replan_error(self):
+        target = str(self.root / "notes.txt")
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "patch_file",
+                "action": "replace",
+                "params": {"file_path": str(target), "old": "nope", "new": "x"},
+                "description": "patch",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("replan_error", result)
+        self.assertIn("no request/evidence", result["replan_error"])
+
+    def test_non_patch_failure_does_not_retry(self):
+        target = self.root / "notes.txt"
+        target.write_text("existing\n")
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        orch.last_request = "fix notes"
+        orch.last_evidence = {"status": "ok", "request": "fix notes"}
+        orch.last_impact = None
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {
+                    "file_path": str(target),
+                    "content": "clobber\n",
+                    "rewrite": False,
+                },
+                "description": "refuse to clobber existing file",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(provider.calls), 0)
+        self.assertEqual(target.read_text(), "existing\n")
+
+
 class TestUndoLog(OrchestratorTestCase):
     def test_rollback_restores_content(self):
         target = self.root / "f.txt"

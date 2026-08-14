@@ -95,8 +95,11 @@ MANUAL = (
     "Safety: every mutating step (write/patch/move/delete) is snapshotted "
     "before execution and rolled back automatically if a step fails. The tool "
     "never executes before returning an awaiting_confirmation preview: always "
-    "relay the summary to the user and only proceed after approval. Use undo "
-    "to revert manually after a successful run."
+    "relay the summary to the user and only proceed after approval. Patch "
+    "anchors are validated against the file at plan time; if a patch_file "
+    "still fails at runtime, the plan is automatically re-planned (up to "
+    "exec_retries) and re-executed instead of stopping. Use undo to revert "
+    "manually after a successful run."
 )
 
 
@@ -112,11 +115,13 @@ class Orchestrator:
         *,
         backup_root: str | None = None,
         max_plan_steps: int = 8,
+        exec_retries: int = 1,
         root: str = ".",
     ) -> None:
         self.registry = registry
         self.provider = provider
         self.memory = memory
+        self.exec_retries = max(0, exec_retries)
         self.discovery = Discovery(registry, root=root)
         self.impact = ImpactAssessor(registry, root=root)
         self.planner = Planner(provider, registry, max_plan_steps=max_plan_steps)
@@ -299,7 +304,87 @@ class Orchestrator:
             }
         if not confirm:
             return self._awaiting_confirmation(plan)
-        return self.executor.execute(plan, rollback_on_failure=rollback_on_failure)
+        return self._execute(plan, rollback_on_failure=rollback_on_failure)
+
+    def _execution_feedback(self, result: dict[str, Any]) -> str:
+        """Build the planner rejection feedback from a failed execution."""
+        failed = result.get("failed_step") or {}
+        parts = [
+            "EXECUTION FAILURE: a step failed at runtime and all changes were "
+            "rolled back automatically. Re-plan the affected steps.",
+            f"failed step: tool={failed.get('tool')} "
+            f"action={failed.get('action')} "
+            f"description={failed.get('description', '')}",
+        ]
+        trace = result.get("trace") or []
+        for entry in trace:
+            if entry.get("tool") == failed.get("tool") and entry.get(
+                "action"
+            ) == failed.get("action"):
+                step_result = entry.get("result") or {}
+                error = step_result.get("error")
+                if isinstance(error, dict):
+                    message = error.get("message")
+                else:
+                    message = step_result.get("message")
+                if message:
+                    parts.append(f"error: {message}")
+                validated = entry.get("validated")
+                if isinstance(validated, dict) and validated.get("check"):
+                    parts.append(
+                        f"validation: {validated.get('check')} ok={validated.get('ok')}"
+                    )
+                break
+        parts.append(
+            "If the patch anchors were rejected: add a read_file step for the "
+            "exact target and copy the old/context lines VERBATIM from that "
+            "read; never paraphrase or guess them."
+        )
+        return "\n".join(parts)
+
+    def _replan_after_failure(self, feedback: str) -> dict[str, Any]:
+        """Re-plan from the last request/evidence with execution feedback. Only
+        valid when rollback restored the files (the evidence still describes
+        the current state)."""
+        if self.last_evidence is None or self.last_request is None:
+            return {"status": "error", "message": "no request/evidence to re-plan"}
+        plan = self.planner.plan(
+            self.last_request,
+            {**self.last_evidence, "impact": self.last_impact},
+            feedback=feedback,
+        )
+        if plan.get("status") != "ok":
+            return plan
+        issues = self.impact.check_plan_steps(plan.get("steps", []))
+        if issues:
+            return {"status": "error", "message": "; ".join(issues), "plan": plan}
+        self.last_plan = plan
+        return plan
+
+    def _execute(
+        self,
+        steps: list[dict],
+        rollback_on_failure: bool = True,
+    ) -> dict[str, Any]:
+        """Run the executor, automatically re-planning up to ``exec_retries``
+        times when a patch_file step fails at runtime (typically a hallucinated
+        anchor; the rollback restores the files so re-planning is safe)."""
+        attempts = 0
+        while True:
+            result = self.executor.execute(
+                steps, rollback_on_failure=rollback_on_failure
+            )
+            if result.get("status") == "success" or attempts >= self.exec_retries:
+                return result
+            failed = result.get("failed_step")
+            if not isinstance(failed, dict) or failed.get("tool") != "patch_file":
+                return result
+            attempts += 1
+            replan = self._replan_after_failure(self._execution_feedback(result))
+            if replan.get("status") != "ok":
+                result["replan_error"] = replan.get("message")
+                return result
+            steps = replan.get("steps", [])
 
     def validate(self, path: str) -> dict[str, Any]:
         result = self.registry.dispatch("read_file", "read", file_path=path)
@@ -334,7 +419,7 @@ class Orchestrator:
             return self._awaiting_confirmation(
                 plan.get("steps", []), impact=self.last_impact
             )
-        return self.executor.execute(plan.get("steps", []))
+        return self._execute(plan.get("steps", []))
 
     def undo(self) -> dict[str, Any]:
         return self.undo_log.rollback()

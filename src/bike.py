@@ -45,7 +45,9 @@ def main() -> None:
 
     registry = build_default_registry()
 
-    if (isinstance(provider, OpenCodeProvider) and not provider.api_key) or (isinstance(provider, LMStudioProvider) and not provider.api_key):
+    if (isinstance(provider, OpenCodeProvider) and not provider.api_key) or (
+        isinstance(provider, LMStudioProvider) and not provider.api_key
+    ):
         ui.show_info(
             "Provedor sem chave/modelo configurado; exibindo manuais das ferramentas."
         )

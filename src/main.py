@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.agent import Agent
 from src.context import ContextCompressor
 from src.memory import Memory
+from src.navigation import create_navigation_tool
 from src.orchestrator import create_orchestrator_tool
 
 from src.providers.base import ProviderError
@@ -47,6 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "and scripting phases).",
     )
     return parser.parse_args(argv)
+
 
 def build_provider():
     """Instantiate the provider named by ``AGENT_PROVIDER`` (from ``.env``).
@@ -91,6 +93,9 @@ def main(argv: list[str] | None = None) -> None:
         max_plan_steps=args.max_plan_steps,
     )
     registry.register(orchestrator.name, orchestrator)
+
+    navigation = create_navigation_tool(provider)
+    registry.register(navigation.name, navigation)
 
     agent = Agent(
         provider=provider,

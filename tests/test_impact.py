@@ -196,6 +196,85 @@ class TestPlanGuard(ImpactTestCase):
         ]
         self.assertEqual(assessor.check_plan_steps(steps), [])
 
+    def _anchor_steps(self, action: str, **extra):
+        path = str(self.root / "notes.txt")
+        return [
+            {
+                "tool": "read_file",
+                "action": "read",
+                "params": {"file_path": path},
+            },
+            {
+                "tool": "patch_file",
+                "action": action,
+                "params": {"file_path": path, **extra},
+            },
+        ]
+
+    def test_patch_replace_anchor_present_ok(self):
+        (self.root / "notes.txt").write_text("hello\nworld\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        steps = self._anchor_steps("replace", old="world", new="everyone")
+        self.assertEqual(assessor.check_plan_steps(steps), [])
+
+    def test_patch_replace_anchor_missing_rejected(self):
+        (self.root / "notes.txt").write_text("hello\nworld\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        steps = self._anchor_steps("replace", old="invented", new="x")
+        issues = assessor.check_plan_steps(steps)
+        self.assertTrue(any("'old' text not found" in issue for issue in issues))
+
+    def test_patch_replace_ambiguous_rejected(self):
+        (self.root / "notes.txt").write_text("dup\ndup\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        steps = self._anchor_steps("replace", old="dup", new="x")
+        issues = assessor.check_plan_steps(steps)
+        self.assertTrue(any("replace_all" in issue for issue in issues))
+        ok = self._anchor_steps("replace", old="dup", new="x", replace_all=True)
+        self.assertEqual(assessor.check_plan_steps(ok), [])
+
+    def test_patch_apply_hunk_present_ok(self):
+        (self.root / "notes.txt").write_text("a\nb\nc\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        diff = "@@ -1,3 +1,3 @@\n a\n-b\n+c\n"
+        steps = self._anchor_steps("apply", diff=diff)
+        self.assertEqual(assessor.check_plan_steps(steps), [])
+
+    def test_patch_apply_hunk_missing_rejected(self):
+        (self.root / "notes.txt").write_text("a\nb\nc\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        diff = "@@ -1,3 +1,3 @@\n not-there\n-b\n+c\n"
+        issues = assessor.check_plan_steps(self._anchor_steps("apply", diff=diff))
+        self.assertTrue(any("not found in" in issue for issue in issues))
+
+    def test_patch_apply_tolerates_wrong_line_numbers(self):
+        (self.root / "notes.txt").write_text("a\nb\nc\n")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        diff = "@@ -50,3 +50,3 @@\n a\n-b\n+c\n"
+        steps = self._anchor_steps("apply", diff=diff)
+        self.assertEqual(assessor.check_plan_steps(steps), [])
+
+    def test_patch_after_write_in_plan_skips_anchor_check(self):
+        path = str(self.root / "fresh.txt")
+        assessor = ImpactAssessor(self.registry, root=str(self.root))
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": path, "content": "alpha\nbeta\n"},
+            },
+            {
+                "tool": "patch_file",
+                "action": "replace",
+                "params": {
+                    "file_path": path,
+                    "old": "invented against future content",
+                    "new": "x",
+                },
+            },
+        ]
+        self.assertEqual(assessor.check_plan_steps(steps), [])
+
     def test_awaiting_confirmation_includes_impact(self):
         provider = FakeProvider(
             [

@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Browser credentials (proxy / site auth)
+.browser-credentials.json
