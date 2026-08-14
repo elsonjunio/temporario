@@ -114,9 +114,15 @@ class TestFileReaderDispatch(unittest.TestCase):
 class TestListDirDispatch(unittest.TestCase):
     def test_list(self):
         result = list_dir.dispatch("list", path="src/tools")
+        self.assertEqual(result["status"], "success")
         self.assertGreater(result["total"], 0)
         names = {item["name"] for item in result["items"]}
         self.assertIn("facade.py", names)
+
+    def test_tree_includes_status(self):
+        result = list_dir.dispatch("list", path="src/tools", tree=True, max_depth=3)
+        self.assertEqual(result["status"], "success")
+        self.assertGreater(len(result["tree"]), 0)
 
     def test_unknown_tool_in_facade(self):
         result = facade.dispatch("does_not_exist", "list")
@@ -126,6 +132,7 @@ class TestListDirDispatch(unittest.TestCase):
 class TestSearchFilesDispatch(unittest.TestCase):
     def test_search(self):
         result = search_files.dispatch("search", pattern="*.py", path="src/tools")
+        self.assertEqual(result["status"], "success")
         self.assertGreater(result["total"], 0)
 
     def test_extension_filter(self):
@@ -259,6 +266,25 @@ class TestWriteFileDispatch(unittest.TestCase):
         result = write_file.dispatch("write", file_path=str(target), content="x")
         self.assertEqual(result["status"], "success")
         self.assertTrue(target.exists())
+
+    def test_rewrite_false_refuses_existing_file(self):
+        target = self.base / "hello.txt"
+        target.write_text("old")
+        result = write_file.dispatch(
+            "write", file_path=str(target), content="new", rewrite=False
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("rewrite=true", result["message"])
+        self.assertEqual(target.read_text(), "old")
+
+    def test_rewrite_true_overwrites(self):
+        target = self.base / "hello.txt"
+        target.write_text("old")
+        result = write_file.dispatch(
+            "write", file_path=str(target), content="new", rewrite=True
+        )
+        self.assertEqual(result["mode"], "overwritten")
+        self.assertEqual(target.read_text(), "new")
 
     def test_append(self):
         target = self.base / "log.txt"

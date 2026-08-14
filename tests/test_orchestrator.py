@@ -17,7 +17,10 @@ class FakeProvider:
 
     def infer(self, user_prompt, config, **settings):
         self.calls.append((user_prompt, config))
-        return self.responses.pop(0)
+        if self.responses:
+            self.last = self.responses.pop(0)
+            return self.last
+        return self.last
 
 
 class OrchestratorTestCase(unittest.TestCase):
@@ -62,6 +65,76 @@ class TestDiscovery(OrchestratorTestCase):
         result = discovery.discover("do something", terms=["target"])
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["count"], 1)
+
+
+class TestDiscoveryGreenfield(OrchestratorTestCase):
+    def test_seed_paths_creates_new_file_candidates(self):
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover(
+            "create the backend skeleton",
+            seed_paths=["backend/app/main.py", "frontend/package.json"],
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["count"], 2)
+        types = {c["path"]: c["type"] for c in result["candidates"]}
+        self.assertEqual(
+            types[str((self.root / "backend/app/main.py").resolve())],
+            "new_file",
+        )
+        self.assertEqual(
+            types[str((self.root / "frontend/package.json").resolve())],
+            "new_file",
+        )
+        self.assertIn("seeded", result["reason"])
+
+    def test_seed_paths_marks_existing_paths_as_files(self):
+        (self.root / "README.md").write_text("hi\n")
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover("edit readme", seed_paths=["README.md"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["candidates"][0]["type"], "file")
+
+    def test_seed_paths_dedupes(self):
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover("x", seed_paths=["a.txt", "a.txt", "b.txt"])
+        self.assertEqual(result["count"], 2)
+
+
+class TestOrchestratorGreenfield(OrchestratorTestCase):
+    def _steps_json(self, *file_paths):
+        steps = []
+        for path in file_paths:
+            steps.append(
+                {
+                    "tool": "write_file",
+                    "action": "write",
+                    "params": {"file_path": str(path), "content": "x"},
+                    "validate_after": True,
+                    "description": f"create {path.name}",
+                }
+            )
+        return json.dumps({"steps": steps})
+
+    def test_plan_with_paths_bypasses_keyword_search(self):
+        provider = FakeProvider([self._steps_json(self.root / "backend" / "main.py")])
+        orch = self._make_orch(provider)
+        plan = orch.plan(
+            "create backend skeleton",
+            paths=["backend/main.py", "backend/requirements.txt"],
+        )
+        self.assertEqual(plan["status"], "ok")
+        evidence = orch.last_evidence
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(evidence["count"], 2)
+        self.assertTrue(all(c["type"] == "new_file" for c in evidence["candidates"]))
+
+    def test_run_with_paths_returns_awaiting_confirmation_with_impact(self):
+        provider = FakeProvider([self._steps_json(self.root / "backend" / "main.py")])
+        orch = self._make_orch(provider)
+        result = orch.run("create backend skeleton", paths=["backend/main.py"])
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertIn("Impact analysis", result["impact"])
+        self.assertIn("mode=new", result["impact"])
 
 
 class TestPlanner(OrchestratorTestCase):
@@ -164,24 +237,140 @@ class TestExecutor(OrchestratorTestCase):
         self.assertEqual(len(result["summary"]), 1)
         self.assertFalse(target.exists())
 
-    def test_validation_expect_failure_rolls_back(self):
+    def test_run_command_defaults_cwd_to_root(self):
         provider = FakeProvider()
         orch = self._make_orch(provider)
-        target = self.root / "out.txt"
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": "pwd"},
+                "validate_after": True,
+                "expect": str(self.root),
+                "description": "print working dir",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+
+    def test_run_command_expect_is_case_insensitive(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "Reinitialized existing repository"'},
+                "validate_after": True,
+                "expect": "Initialized",
+                "description": "re-init repo",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+
+    def test_write_file_expect_result_mode_passes(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "x.txt"
         steps = [
             {
                 "tool": "write_file",
                 "action": "write",
                 "params": {"file_path": str(target), "content": "hello\n"},
                 "validate_after": True,
+                "expect": "created",
+                "description": "create x.txt",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertEqual(target.read_text(), "hello\n")
+
+    def test_write_file_missing_expect_warns_not_fails(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "auth.txt"
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {
+                    "file_path": str(target),
+                    "content": 'router = APIRouter(prefix="/api/auth")\n@router.post("/register")\n',
+                },
+                "validate_after": True,
+                "expect": "/api/auth/register",
+                "description": "composed path not verbatim",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn(
+            "not found verbatim", result["trace"][0]["validated"]["expect_warn"]
+        )
+
+    def test_read_missing_file_warns_not_fails(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "read_file",
+                "action": "read",
+                "params": {"file_path": str(self.root / "settings.py")},
+                "validate_after": False,
+                "description": "read settings",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn("may not exist", result["trace"][0]["read_warn"])
+
+    def test_command_expect_missing_warns_not_fails(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "Seed concluido com sucesso"'},
+                "validate_after": True,
+                "expect": "seed_concluido",
+                "description": "run seed",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["trace"][0]["ok"])
+        self.assertIn(
+            "not found in command output",
+            result["trace"][0]["validated"]["expect_warn"],
+        )
+
+    def test_validation_expect_failure_rolls_back(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "out.txt"
+        target.write_text("original\n")
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "original\n"},
+                "validate_after": True,
                 "expect": "WRONG",
-                "description": "create out.txt",
+                "description": "rewrite out.txt",
             }
         ]
         result = orch.execute(steps, confirm=True)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["rollback"]["status"], "rolled_back")
-        self.assertFalse(target.exists())
+        self.assertEqual(target.read_text(), "original\n")
 
     def test_failed_step_rolls_back_previous(self):
         provider = FakeProvider()
@@ -408,6 +597,7 @@ class TestOrchestratorTool(OrchestratorTestCase):
                                     "file_path": str(target),
                                     "content": "after\n",
                                 },
+                                "rewrite": True,
                             }
                         ]
                     }

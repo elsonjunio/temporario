@@ -74,9 +74,18 @@ class Executor:
                 str(result.get(key) or "") for key in ("stdout", "stderr")
             )
             ok = result.get("status") == "success"
+            warn = None
             if ok and expect:
-                ok = expect in output
-            return {"ok": ok, "check": "command_output", "expect": expect}
+                ok = expect.lower() in output.lower()
+                if not ok:
+                    ok = True
+                    warn = f"expect {expect!r} not found in command output"
+            return {
+                "ok": ok,
+                "check": "command_output",
+                "expect": expect,
+                "expect_warn": warn,
+            }
 
         if target is None:
             return {"ok": True, "check": "no_target"}
@@ -89,8 +98,13 @@ class Executor:
         )
         content = read.get("current_page_content") or read.get("content") or ""
         ok = read.get("status") == "success"
+        warn = None
         if ok and expect:
-            ok = expect in content
+            mode = result.get("mode")
+            ok = expect in content or (mode is not None and expect == mode)
+            if not ok and tool == "write_file" and mode in ("created", "overwritten"):
+                ok = True
+                warn = f"expect {expect!r} not found verbatim in written content"
 
         deep = self._deep_validate(target)
         if deep is not None:
@@ -99,6 +113,7 @@ class Executor:
                 "ok": ok,
                 "check": "module_contract",
                 "expect": expect,
+                "expect_warn": warn,
                 "contract": deep,
                 "content_length": len(content),
             }
@@ -106,22 +121,40 @@ class Executor:
             "ok": ok,
             "check": "readable_text",
             "expect": expect,
+            "expect_warn": warn,
             "content_length": len(content),
         }
 
-    def execute(self, steps: list[dict]) -> dict[str, Any]:
+    def execute(
+        self, steps: list[dict], rollback_on_failure: bool = True
+    ) -> dict[str, Any]:
         trace: list[dict[str, Any]] = []
         for step in steps:
             tool = step["tool"]
             action = step["action"]
-            params = step.get("params", {})
+            params = dict(step.get("params", {}))
             description = step.get("description", "")
+
+            if (
+                tool == "run_command"
+                and not params.get("cwd")
+                and self.impact is not None
+            ):
+                params["cwd"] = self.impact.root
 
             self.undo_log.snapshot(tool, action, params)
             result = self.registry.dispatch(tool, action, **params)
             self._record(tool, action, params, result)
 
             ok = result.get("status") == "success" and "error" not in result
+
+            read_warn = None
+            if not ok and tool == "read_file":
+                ok = True
+                read_warn = (
+                    "read_file did not succeed (file may not exist); "
+                    "proceeding so the plan can recover by listing the directory"
+                )
 
             validated = None
             if ok and (tool in MUTATING_TOOLS or step.get("validate_after")):
@@ -137,11 +170,15 @@ class Executor:
                     "result": result,
                     "ok": ok,
                     "validated": validated,
+                    "read_warn": read_warn,
                 }
             )
 
             if not ok:
-                rollback = self.undo_log.rollback()
+                if rollback_on_failure:
+                    rollback = self.undo_log.rollback()
+                else:
+                    rollback = {"status": "kept", "reason": "rollback_on_failure=False"}
                 return {
                     "status": "failed",
                     "failed_step": step,

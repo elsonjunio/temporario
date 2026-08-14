@@ -85,7 +85,45 @@ class Discovery:
         )
         return result.get("content", "") if result.get("status") == "success" else ""
 
-    def discover(self, request: str, terms: list[str] | None = None) -> dict[str, Any]:
+    def _seed_candidates(self, paths: list[str]) -> list[dict[str, Any]]:
+        """Turn explicit target paths into new-file candidates without
+        searching. Relative paths resolve against ``self.root``, so a
+        greenfield project can be planned file by file."""
+        seen: dict[str, dict[str, Any]] = {}
+        for raw in paths:
+            path = (Path(self.root) / raw).resolve()
+            key = str(path)
+            if key in seen:
+                continue
+            exists = path.exists()
+            seen[key] = {
+                "name": path.name,
+                "path": key,
+                "type": "file" if exists else "new_file",
+                "snippet": "",
+            }
+        return list(seen.values())
+
+    def discover(
+        self,
+        request: str,
+        terms: list[str] | None = None,
+        seed_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if seed_paths:
+            seeded = self._seed_candidates(seed_paths)
+            return {
+                "status": "ok",
+                "request": request,
+                "terms": terms or [],
+                "reason": (
+                    "explicit target paths seeded (no keyword search); "
+                    "existing paths are 'file', new ones are 'new_file'"
+                ),
+                "count": len(seeded),
+                "candidates": seeded,
+            }
+
         terms = terms or extract_terms(request)
         if not terms:
             return {

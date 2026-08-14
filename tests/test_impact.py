@@ -137,6 +137,7 @@ class TestPlanGuard(ImpactTestCase):
                     }
                 )
             ]
+            * 2
         )
         orch = Orchestrator(self.registry, provider, root=str(REPO))
         plan = orch.plan("add exclude to list_dir", terms=["list_dir"])
@@ -163,6 +164,7 @@ class TestPlanGuard(ImpactTestCase):
                     }
                 )
             ]
+            * 2
         )
         orch = Orchestrator(self.registry, provider, root=str(REPO))
         result = orch.run("add exclude to list_dir", terms=["list_dir"])
@@ -201,6 +203,14 @@ class TestPlanGuard(ImpactTestCase):
                     {
                         "steps": [
                             {
+                                "tool": "read_file",
+                                "action": "read",
+                                "params": {
+                                    "file_path": str(REPO / "src/tools/list_dir.py")
+                                },
+                                "description": "read list_dir",
+                            },
+                            {
                                 "tool": "patch_file",
                                 "action": "replace",
                                 "params": {
@@ -211,7 +221,7 @@ class TestPlanGuard(ImpactTestCase):
                                 "validate_after": True,
                                 "expect": "handle_list_dir",
                                 "description": "patch list_dir",
-                            }
+                            },
                         ]
                     }
                 )

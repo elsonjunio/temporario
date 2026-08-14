@@ -21,14 +21,23 @@ class Planner:
         provider: Any,
         registry: ToolRegistry,
         max_plan_steps: int = 8,
+        max_plan_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.max_plan_steps = max_plan_steps
+        self.max_plan_retries = max_plan_retries
 
-    def build_prompt(self, request: str, evidence: dict[str, Any]) -> str:
+    def build_prompt(
+        self, request: str, evidence: dict[str, Any], feedback: str | None = None
+    ) -> str:
         manual = self.registry.get_manual()
         evidence_block = json.dumps(evidence, ensure_ascii=False, indent=2)
+        feedback_block = (
+            f"\n\nREJECTION FEEDBACK for your previous plan (fix ALL of it):\n{feedback}\n"
+            if feedback
+            else ""
+        )
         return (
             "Plan a filesystem modification.\n\n"
             f"Request:\n{request}\n\n"
@@ -38,13 +47,97 @@ class Planner:
             '{"tool": "<tool>", "action": "<action>", "params": {...}, '
             '"validate_after": true, "expect": "<optional substring to verify", '
             '"description": "..."}\n\n'
+            "The response must be STRICT, VALID JSON: never put a raw newline "
+            "or tab inside a string value -- escape them (\\\\n); keep every "
+            "command string single-line.\n"
+            "expect semantics: for write_file/patch_file it is a substring "
+            "expected in the written file content, or a result keyword "
+            '("created"/"overwritten"/"unchanged"/"applied"). For run_command '
+            "it is a substring of stdout/stderr. Set validate_after=true only "
+            "when a validation matters; the step fails and rolls back if "
+            "expect is set but not found.\n"
+            "For write_file/patch_file, set expect to a SHORT string you are "
+            "certain appears VERBATIM in the file (an import line, a class or "
+            "function name, a router prefix literal). NEVER set expect to a "
+            "value assembled from separate literals, e.g. a full endpoint "
+            "path like /api/auth/register when the file only holds prefix "
+            "=/api/auth and route /register separately; that check will not "
+            "match and the step rolls back.\n"
+            "Reading a file that does not exist no longer fails the plan: "
+            "the step logs a read_warn and execution continues. Before "
+            "reading a file, list its directory first (list_dir) and use "
+            "exact paths from that listing; never invent a filename.\n"
             "Rules:\n"
             "- Use only the available tools listed above.\n"
             "- Use concrete file paths from the discovery evidence.\n"
+            "- If the workspace has a docs/SPEC.md (or docs/PLAYBOOK.md), add a "
+            "read_file step for it first and follow its contract for the files "
+            "you create or modify.\n"
+            "- Before writing a module that depends on existing project files "
+            "(models, schemas, services, routes), add read_file steps for those "
+            "files and REUSE their exact class/enum/field/endpoint names and "
+            "values; never invent new ones. When the SPEC conflicts with "
+            "existing code, follow the SPEC and call out the deviation.\n"
+            "- When planning a consumer of an existing backend API (frontend "
+            "services, components, guards), add read_file steps for the actual "
+            "backend router/schema files and derive the EXACT url paths, "
+            "request payloads and response field names from that committed "
+            "code. The committed backend is the source of truth for what the "
+            "API returns (auth/login returns e.g. access_token, not token). "
+            "NEVER invent endpoints, payloads or response shapes. If a "
+            "capability the UI needs is missing from the backend (e.g. no "
+            "endpoint listing customers), add a step that CREATES it in the "
+            "backend (new endpoint + registration) instead of faking it "
+            "client-side.\n"
+            "- run_command integration/smoke checks that call an HTTP API must "
+            "use paths verified against the backend source: for each endpoint "
+            "called, add a read_file step for its router module and build the "
+            "EXACT path as prefix + route decorator (e.g. an APIRouter with "
+            "prefix '/products' and @router.get('/') means GET /products, NOT "
+            "/api/products; an auth router with prefix '/api/auth' means "
+            "POST /api/auth/login). The router prefix overrides any path "
+            "written in the prompt, SPEC or PLAYBOOK: when those documents "
+            "name a different URL, the committed code wins. When unsure, curl "
+            "the app's /openapi.json first and use the exact paths listed "
+            "there. Never write a smoke-test URL from memory.\n"
+            "- run_command smoke checks that authenticate must NOT guess "
+            "credentials or payload fields: add read_file steps for "
+            "backend/app/seed.py and backend/app/config.py to copy the exact "
+            "admin credentials (e.g. SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD), "
+            "and read the auth router + its request schema to use the exact "
+            "login payload field names (e.g. email, not username). A 4xx/5xx "
+            "response means the check itself is wrong -- fix it, do not weaken "
+            "the assertion.\n"
+            "- A run_command smoke/integration step that calls the HTTP API "
+            "MUST derive URLs and credentials AT RUNTIME inside the same "
+            "command, never hardcode them: (1) use python3 to fetch "
+            "http://127.0.0.1:8000/openapi.json and pick the exact login path "
+            "(e.g. the key that ends with '/auth/login') and the products "
+            "list path (the key that has no '/api' segment and is exactly "
+            "'/products'); (2) read backend/app/config.py and "
+            "backend/app/seed.py with python3 and extract the owner "
+            "email/password values that seed() actually uses (the real seed "
+            "credentials are admin@volupia.com/admin123); (3) only then curl "
+            "those exact paths with those exact fields. If the server answers "
+            "non-200, print the response body. Never put a guessed email, "
+            "password, URL or field name in the command.\n"
             "- EXISTING targets (change_mode 'modify') must be edited with "
             "patch_file (replace or apply). Use write_file ONLY to create NEW "
             "files (change_mode 'new'), or for an intentional full rewrite in "
             'which case set "rewrite": true on the step.\n'
+            "- patch_file 'replace' requires the old text copied VERBATIM from "
+            "the file content (add a read_file step for the target first). When "
+            "most of the file body changes, or you are unsure of the exact old "
+            "anchor, prefer write_file with rewrite:true and the full new "
+            "content instead of a fragile patch.\n"
+            "- GREENFIELD: targets seeded with type 'new_file' do not exist yet "
+            "and must be created with write_file using the exact path from the "
+            "evidence. Create parent directories implicitly via write_file "
+            "(create_dirs defaults to true); there is no separate mkdir tool.\n"
+            "- run_command steps that scaffold or install (pip install, npm "
+            "install, ng new, git init) must set cwd to the project root and a "
+            "generous timeout (600+) so they do not time out; set "
+            "validate_after=true and expect a success marker when possible.\n"
             "- Registered tool modules (is_registered_tool=true) must keep "
             "their module contract: MANUAL, SPEC (name + handlers), "
             "get_manual() and dispatch(action, **params). A rewrite that drops "
@@ -94,21 +187,32 @@ class Planner:
                 return f"step {i}: params must be an object"
         return None
 
-    def plan(self, request: str, evidence: dict[str, Any]) -> dict[str, Any]:
-        prompt = self.build_prompt(request, evidence)
-        raw = self.provider.infer(prompt, PLANNING_SYSTEM)
+    def plan(
+        self,
+        request: str,
+        evidence: dict[str, Any],
+        feedback: str | None = None,
+    ) -> dict[str, Any]:
+        prompt = self.build_prompt(request, evidence, feedback=feedback)
+        attempts = 0
+        while True:
+            attempts += 1
+            raw = self.provider.infer(prompt, PLANNING_SYSTEM)
 
-        data = extract_json_object(raw)
-        if not isinstance(data, dict) or "steps" not in data:
+            data = extract_json_object(raw)
+            if isinstance(data, dict) and "steps" in data:
+                steps = data["steps"]
+                problem = self._validate_steps(steps)
+                if problem is None:
+                    return {"status": "ok", "steps": steps}
+                if attempts < self.max_plan_retries:
+                    continue
+                return {"status": "error", "message": problem, "raw": raw[:500]}
+
+            if attempts < self.max_plan_retries:
+                continue
             return {
                 "status": "error",
                 "message": "provider did not return a JSON plan with 'steps'",
                 "raw": raw[:500],
             }
-
-        steps = data["steps"]
-        problem = self._validate_steps(steps)
-        if problem is not None:
-            return {"status": "error", "message": problem, "raw": raw[:500]}
-
-        return {"status": "ok", "steps": steps}

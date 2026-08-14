@@ -53,6 +53,7 @@ def handle_search_files(
     page_items = matches[start:end]
 
     return {
+        "status": "success",
         "path": str(root),
         "pattern": pattern,
         "page": page,

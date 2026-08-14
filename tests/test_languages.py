@@ -141,11 +141,19 @@ class TestRunnerCommand(LanguageTestCase):
         self.assertEqual(runner_command(GO, self.root), None)
 
     def test_python_unittest_fallback(self):
-        self.assertEqual(runner_command(PYTHON, self.root), "python3 -m unittest")
+        self.assertEqual(runner_command(PYTHON, self.root), "python -m unittest")
 
     def test_python_pytest_when_configured(self):
         (self.root / "pyproject.toml").write_text("[tool.pytest]\n")
-        self.assertEqual(runner_command(PYTHON, self.root), "pytest")
+        self.assertEqual(runner_command(PYTHON, self.root), "python -m pytest")
+
+    def test_python_pytest_via_requirements(self):
+        (self.root / "requirements.txt").write_text("pytest\nhttpx\n")
+        self.assertEqual(runner_command(PYTHON, self.root), "python -m pytest")
+
+    def test_python_pytest_only_when_declared(self):
+        (self.root / "requirements.txt").write_text("fastapi\nuvicorn\n")
+        self.assertNotEqual(runner_command(PYTHON, self.root), "python -m pytest")
 
     def test_no_runner(self):
         self.assertIsNone(runner_command(CPP, self.root))

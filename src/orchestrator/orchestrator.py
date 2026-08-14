@@ -20,6 +20,11 @@ MANUAL = (
     "    Params:\n"
     "      request (str, required): what to change, in natural language.\n"
     "      terms (list[str], optional): explicit search terms for discovery.\n"
+    "      paths (list[str], optional): explicit target file/dir paths to\n"
+    "        create or modify. When given, keyword discovery is SKIPPED and\n"
+    "        each path is treated as a candidate (new_file when missing). Use\n"
+    "        this for greenfield work (new project, empty directory) where the\n"
+    "        request names the exact files to create.\n"
     "      confirm (bool, default false): when false (default) the tool stops\n"
     "        after planning and returns an 'awaiting_confirmation' preview with\n"
     "        the steps and impact analysis to be executed. Re-run with\n"
@@ -42,18 +47,24 @@ MANUAL = (
     "    Params:\n"
     "      request (str, required): what to find or change.\n"
     "      terms (list[str], optional): explicit search terms.\n"
+    "      paths (list[str], optional): explicit target paths to seed as\n"
+    "        candidates (skips keyword search).\n"
     "    Returns: candidate targets with evidence snippets. status 'poor'\n"
     "      means discovery failed and the flow should abort.\n"
     "  - assess\n"
     "    Params:\n"
     "      request (str, required): what to find or change.\n"
     "      terms (list[str], optional): explicit search terms.\n"
+    "      paths (list[str], optional): explicit target paths to seed as\n"
+    "        candidates (skips keyword search).\n"
     "    Returns: per-candidate impact analysis (change mode, recommended tool,\n"
     "      contract status, risks, mapped unit tests) without planning.\n"
     "  - plan\n"
     "    Params:\n"
     "      request (str, required): what to change.\n"
     "      terms (list[str], optional): explicit search terms.\n"
+    "      paths (list[str], optional): explicit target paths to seed as\n"
+    "        candidates (skips keyword search).\n"
     "    Returns: a validated JSON plan of steps, 'aborted' when discovery\n"
     "      was poor, or 'error' when the plan would clobber a registered tool\n"
     "      module without an explicit rewrite.\n"
@@ -115,15 +126,34 @@ class Orchestrator:
         self.last_impact: dict[str, Any] | None = None
         self.last_plan: dict[str, Any] | None = None
         self.last_request: str | None = None
+        self.last_paths: tuple[str, ...] | None = None
 
-    def discover(self, request: str, terms: list[str] | None = None) -> dict[str, Any]:
-        evidence = self.discovery.discover(request, terms)
+    def discover(
+        self,
+        request: str,
+        terms: list[str] | None = None,
+        paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        evidence = self.discovery.discover(request, terms, seed_paths=paths)
         self.last_evidence = evidence
         return evidence
 
-    def plan(self, request: str, terms: list[str] | None = None) -> dict[str, Any]:
-        if self.last_evidence is None or self.last_evidence.get("request") != request:
-            self.last_evidence = self.discovery.discover(request, terms)
+    def plan(
+        self,
+        request: str,
+        terms: list[str] | None = None,
+        paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        paths_key = tuple(paths) if paths else None
+        if (
+            self.last_evidence is None
+            or self.last_evidence.get("request") != request
+            or self.last_paths != paths_key
+        ):
+            self.last_evidence = self.discovery.discover(
+                request, terms, seed_paths=paths
+            )
+        self.last_paths = paths_key
         evidence = self.last_evidence
 
         if evidence.get("status") != "ok":
@@ -136,22 +166,45 @@ class Orchestrator:
         impact = self.impact.assess(request, evidence.get("candidates", []))
         self.last_impact = impact
 
-        plan = self.planner.plan(request, {**evidence, "impact": impact})
-        if plan.get("status") == "ok":
+        feedback: str | None = None
+        attempts = 0
+        while True:
+            attempts += 1
+            plan = self.planner.plan(
+                request, {**evidence, "impact": impact}, feedback=feedback
+            )
+            if plan.get("status") != "ok":
+                return plan
             issues = self.impact.check_plan_steps(plan.get("steps", []))
-            if issues:
+            if not issues:
+                break
+            if attempts >= self.planner.max_plan_retries:
                 return {
                     "status": "error",
                     "message": "\n".join(issues),
                     "plan": plan,
                 }
+            feedback = "; ".join(issues)
         self.last_plan = plan
         self.last_request = request
         return plan
 
-    def assess(self, request: str, terms: list[str] | None = None) -> dict[str, Any]:
-        if self.last_evidence is None or self.last_evidence.get("request") != request:
-            self.last_evidence = self.discovery.discover(request, terms)
+    def assess(
+        self,
+        request: str,
+        terms: list[str] | None = None,
+        paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        paths_key = tuple(paths) if paths else None
+        if (
+            self.last_evidence is None
+            or self.last_evidence.get("request") != request
+            or self.last_paths != paths_key
+        ):
+            self.last_evidence = self.discovery.discover(
+                request, terms, seed_paths=paths
+            )
+        self.last_paths = paths_key
         evidence = self.last_evidence
         impact = self.impact.assess(request, evidence.get("candidates", []))
         self.last_impact = impact
@@ -236,6 +289,7 @@ class Orchestrator:
         self,
         steps: list[dict] | None = None,
         confirm: bool = False,
+        rollback_on_failure: bool = True,
     ) -> dict[str, Any]:
         plan = steps or (self.last_plan or {}).get("steps")
         if not plan:
@@ -245,7 +299,7 @@ class Orchestrator:
             }
         if not confirm:
             return self._awaiting_confirmation(plan)
-        return self.executor.execute(plan)
+        return self.executor.execute(plan, rollback_on_failure=rollback_on_failure)
 
     def validate(self, path: str) -> dict[str, Any]:
         result = self.registry.dispatch("read_file", "read", file_path=path)
@@ -261,9 +315,15 @@ class Orchestrator:
         request: str,
         terms: list[str] | None = None,
         confirm: bool = False,
+        paths: list[str] | None = None,
     ) -> dict[str, Any]:
-        if self.last_request != request or self.last_plan is None:
-            plan = self.plan(request, terms)
+        paths_key = tuple(paths) if paths else None
+        if (
+            self.last_request != request
+            or self.last_plan is None
+            or self.last_paths != paths_key
+        ):
+            plan = self.plan(request, terms, paths=paths)
         else:
             plan = self.last_plan
         if plan.get("status") == "error":
@@ -285,4 +345,5 @@ class Orchestrator:
         self.last_impact = None
         self.last_plan = None
         self.last_request = None
+        self.last_paths = None
         return {"status": "aborted", "discarded_snapshots": discarded}
