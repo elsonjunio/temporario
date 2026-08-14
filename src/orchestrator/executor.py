@@ -129,11 +129,13 @@ class Executor:
         self, steps: list[dict], rollback_on_failure: bool = True
     ) -> dict[str, Any]:
         trace: list[dict[str, Any]] = []
+        soft_failures: list[dict[str, Any]] = []
         for step in steps:
             tool = step["tool"]
             action = step["action"]
             params = dict(step.get("params", {}))
             description = step.get("description", "")
+            soft = bool(step.get("soft"))
 
             if (
                 tool == "run_command"
@@ -174,6 +176,26 @@ class Executor:
                 }
             )
 
+            if not ok and soft:
+                error = result.get("error")
+                message = (
+                    error.get("message")
+                    if isinstance(error, dict)
+                    else result.get("message")
+                )
+                trace[-1]["soft"] = True
+                trace[-1]["soft_failure"] = True
+                soft_failures.append(
+                    {
+                        "step": len(trace),
+                        "tool": tool,
+                        "action": action,
+                        "description": description,
+                        "message": message,
+                    }
+                )
+                continue
+
             if not ok:
                 if rollback_on_failure:
                     rollback = self.undo_log.rollback()
@@ -186,4 +208,8 @@ class Executor:
                     "rollback": rollback,
                 }
 
-        return {"status": "success", "trace": trace}
+        return {
+            "status": "success",
+            "trace": trace,
+            "soft_failures": soft_failures,
+        }

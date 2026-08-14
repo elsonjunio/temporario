@@ -583,6 +583,108 @@ class TestExecRetry(OrchestratorTestCase):
         self.assertEqual(target.read_text(), "existing\n")
 
 
+class TestBestEffortTests(OrchestratorTestCase):
+    def test_soft_step_failure_keeps_changes_and_reports(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "notes.txt"
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "hello\n"},
+                "description": "create notes",
+            },
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "test failed" && exit 1'},
+                "validate_after": True,
+                "soft": True,
+                "description": "run tests (best effort)",
+            },
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(target.read_text(), "hello\n")
+        self.assertFalse(result["trace"][1]["ok"])
+        self.assertTrue(result["trace"][1]["soft_failure"])
+        self.assertEqual(len(result["soft_failures"]), 1)
+        self.assertEqual(result["testing"]["tested"], False)
+        self.assertEqual(result["testing"]["status"], "tests_failed_after_changes")
+
+    def test_soft_step_success_reports_tested(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        steps = [
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "ok"'},
+                "validate_after": True,
+                "soft": True,
+                "description": "run tests",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["testing"]["tested"], True)
+        self.assertEqual(result["testing"]["status"], "tests_passed")
+
+    def test_hard_step_still_rolls_back_after_soft_failure(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "notes.txt"
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "hello\n"},
+                "description": "create notes",
+            },
+            {
+                "tool": "run_command",
+                "action": "run",
+                "params": {"command": 'echo "test failed" && exit 1'},
+                "validate_after": True,
+                "soft": True,
+                "description": "run tests",
+            },
+            {
+                "tool": "patch_file",
+                "action": "replace",
+                "params": {
+                    "file_path": str(target),
+                    "old": "not-present",
+                    "new": "x",
+                },
+                "description": "hard failure step",
+            },
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(target.exists())
+
+    def test_no_soft_step_warns_user_about_custom_test(self):
+        provider = FakeProvider()
+        orch = self._make_orch(provider)
+        target = self.root / "notes.txt"
+        steps = [
+            {
+                "tool": "write_file",
+                "action": "write",
+                "params": {"file_path": str(target), "content": "hello\n"},
+                "description": "create notes",
+            }
+        ]
+        result = orch.execute(steps, confirm=True)
+        self.assertEqual(result["status"], "success")
+        testing = result["testing"]
+        self.assertEqual(testing["tested"], False)
+        self.assertEqual(testing["status"], "no_test_framework")
+        self.assertIn("custom test", testing["message"])
+
+
 class TestUndoLog(OrchestratorTestCase):
     def test_rollback_restores_content(self):
         target = self.root / "f.txt"

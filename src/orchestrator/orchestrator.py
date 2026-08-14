@@ -38,11 +38,13 @@ MANUAL = (
     "      Any language is supported (python, typescript, javascript, java,\n"
     "      kotlin, c, cpp, go, rust, ruby, php, csharp, swift, ...): the impact\n"
     "      analysis detects the target language, maps existing unit tests by the\n"
-    "      language's conventions and detects the project's test runner. When a\n"
-    "      changed module is covered by tests, a final step runs them; when a\n"
-    "      test framework is configured but nothing covers the change, the plan\n"
-    "      adds a suggested test file and runs it; when no test setup exists, a\n"
-    "      recommendation is shown instead of auto-creating a harness.\n"
+    "      language's conventions and detects the project's test runner. Tests are\n"
+    "      BEST EFFORT and never mandatory: when a changed module is covered by tests\n"
+    "      a final soft step runs them (a failure keeps the changes and reports);\n"
+    "      when a test framework is configured but nothing covers the change, the\n"
+    "      plan adds a suggested test file and runs it softly; when no test setup\n"
+    "      exists the result warns the user that the change could not be tested and\n"
+    "      asks whether to keep the changes or apply a custom test.\n"
     "  - discover\n"
     "    Params:\n"
     "      request (str, required): what to find or change.\n"
@@ -375,6 +377,8 @@ class Orchestrator:
                 steps, rollback_on_failure=rollback_on_failure
             )
             if result.get("status") == "success" or attempts >= self.exec_retries:
+                if result.get("status") == "success":
+                    result["testing"] = self._testing_summary(result, steps)
                 return result
             failed = result.get("failed_step")
             if not isinstance(failed, dict) or failed.get("tool") != "patch_file":
@@ -385,6 +389,38 @@ class Orchestrator:
                 result["replan_error"] = replan.get("message")
                 return result
             steps = replan.get("steps", [])
+
+    def _testing_summary(
+        self, result: dict[str, Any], steps: list[dict]
+    ) -> dict[str, Any]:
+        """Best-effort testing report: tests are never mandatory. When a plan
+        ran soft test steps they either passed or are reported as failures that
+        kept the changes; when the project has no test framework/runner, the
+        change could not be tested and the user is asked whether to keep it or
+        apply a custom test."""
+        if any(step.get("soft") for step in steps):
+            soft_failures = result.get("soft_failures") or []
+            if soft_failures:
+                return {
+                    "tested": False,
+                    "status": "tests_failed_after_changes",
+                    "failures": soft_failures,
+                    "message": (
+                        "Tests failed after applying the changes; the changes "
+                        "were kept because testing is best effort. Ask the user "
+                        "whether to keep the changes or apply a custom test."
+                    ),
+                }
+            return {"tested": True, "status": "tests_passed"}
+        return {
+            "tested": False,
+            "status": "no_test_framework",
+            "message": (
+                "Could not test the change: no test framework or runner is "
+                "available for it in this project. Ask the user whether to "
+                "keep the changes or apply a custom test."
+            ),
+        }
 
     def validate(self, path: str) -> dict[str, Any]:
         result = self.registry.dispatch("read_file", "read", file_path=path)
