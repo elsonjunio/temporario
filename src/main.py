@@ -10,8 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.agent import Agent
 from src.context import ContextCompressor
 from src.memory import Memory
+from src.navigation import create_navigation_tool
 from src.orchestrator import create_orchestrator_tool
-from src.providers.opencode import OpenCodeProvider, ProviderError
+
+from src.providers.base import ProviderError
+from src.providers.opencode import OpenCodeProvider
+from src.providers.lmstudio import LMStudioProvider
+
 from src.tools.registry import build_default_registry
 from src.utils import build_environment_info
 
@@ -45,6 +50,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def build_provider():
+    """Instantiate the provider named by ``AGENT_PROVIDER`` (from ``.env``).
+
+    Mirrors ``src/main.py``; duplicated here so this entry point never imports
+    the readline-based REPL (which is not available on Windows).
+    """
+    name = os.getenv("AGENT_PROVIDER", "opencode").strip().lower()
+    if name == "opencode":
+        return OpenCodeProvider()
+    if name == "lmstudio":
+        return LMStudioProvider()
+    raise ValueError(f"Unknown AGENT_PROVIDER: {name!r}")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     load_dotenv()
@@ -54,14 +73,14 @@ def main(argv: list[str] | None = None) -> None:
     workspace = root
     print(f"Workspace: {workspace}")
 
-    provider = OpenCodeProvider(model="big-pickle")
+    provider = build_provider()
 
     registry = build_default_registry()
 
     if not provider.api_key:
-        print("OPENCODE_API_KEY is not set. Skipping live agent demo.")
-        print("Tool manuals available via the registry get_manual():")
-        print(registry.get_manual())
+        print(
+            "Provedor sem chave/modelo configurado; exibindo manuais das ferramentas."
+        )
         return
 
     memory = Memory(compressor=ContextCompressor(provider=provider))
@@ -74,6 +93,9 @@ def main(argv: list[str] | None = None) -> None:
         max_plan_steps=args.max_plan_steps,
     )
     registry.register(orchestrator.name, orchestrator)
+
+    navigation = create_navigation_tool(provider)
+    registry.register(navigation.name, navigation)
 
     agent = Agent(
         provider=provider,

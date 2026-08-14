@@ -16,6 +16,7 @@ from src.orchestrator.languages import (
     suggest_test,
 )
 from src.tools._fs import resolve_path
+from src.tools.patch_file import _find_block, _hunk_sides, _parse_unified_diff
 from src.tools.registry import ToolRegistry
 
 TOOL_CONTRACT = ("MANUAL", "SPEC", "get_manual", "dispatch")
@@ -257,9 +258,72 @@ class ImpactAssessor:
 
     # -- plan guard ---------------------------------------------------------
 
+    def _patch_anchor_issues(
+        self,
+        step_index: int,
+        action: str,
+        file_path: str,
+        params: dict[str, Any],
+    ) -> list[str]:
+        """Deterministic check that a patch_file step's anchors actually exist
+        in the current file content. Only called when the target exists on disk
+        and was not mutated earlier in the plan; line numbers in ``@@`` hunks
+        are tolerated (the apply logic matches by content), but an invented
+        old/context block is rejected before the plan is confirmed."""
+        issues: list[str] = []
+        if action not in ("replace", "apply"):
+            return issues
+        target = resolve_path(file_path)
+        if not target.is_file():
+            return issues
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return issues
+        if action == "replace":
+            old = params.get("old")
+            if not old:
+                return issues
+            occurrences = content.count(old)
+            if occurrences == 0:
+                issues.append(
+                    f"step {step_index}: patch_file replace 'old' text not found "
+                    f"in {file_path}. Copy the 'old' text VERBATIM from the "
+                    "current file (add a read_file step and re-read it); the "
+                    "step would fail and roll back at execution."
+                )
+            elif occurrences > 1 and not params.get("replace_all"):
+                issues.append(
+                    f"step {step_index}: patch_file replace 'old' text appears "
+                    f"{occurrences} times in {file_path}; set replace_all=true "
+                    "or provide more context, else execution would fail."
+                )
+            return issues
+        diff = params.get("diff")
+        if not diff:
+            return issues
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+        for hunk in _parse_unified_diff(str(diff)):
+            old_side, _new_side = _hunk_sides(hunk)
+            if not old_side:
+                continue
+            if _find_block(lines, old_side, hunk["old_start"]) is None:
+                issues.append(
+                    f"step {step_index}: patch_file apply hunk "
+                    f"@@ -{hunk['old_start']},{hunk['old_count']} "
+                    f"+{hunk['new_start']},{hunk['new_count']} @@ not found in "
+                    f"{file_path}. Copy the context/removal lines VERBATIM from "
+                    "the current file (add a read_file step and re-read it); the "
+                    "step would fail and roll back at execution."
+                )
+        return issues
+
     def check_plan_steps(self, steps: list[dict[str, Any]]) -> list[str]:
         issues: list[str] = []
         known: set[str] = set()
+        mutated: set[str] = set()
         for index, step in enumerate(steps, start=1):
             tool = step.get("tool")
             params = step.get("params") or {}
@@ -291,6 +355,7 @@ class ImpactAssessor:
                             "MANUAL/SPEC/get_manual/dispatch."
                         )
                 known.add(norm)
+                mutated.add(norm)
                 continue
             if tool == "patch_file" and norm not in known:
                 issues.append(
@@ -300,4 +365,15 @@ class ImpactAssessor:
                     "verbatim from the file, so add a read_file step for it "
                     "first."
                 )
+            if tool == "patch_file":
+                if norm in known and norm not in mutated:
+                    issues.extend(
+                        self._patch_anchor_issues(
+                            index, str(step.get("action")), file_path, params
+                        )
+                    )
+                mutated.add(norm)
+                continue
+            if tool in ("move_file", "delete_file"):
+                mutated.add(norm)
         return issues

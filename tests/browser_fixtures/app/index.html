@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pt">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>App de Teste</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Dashboard</h1>
+      <nav aria-label="Principal">
+        <a href="#usuarios">Usuários</a>
+      </nav>
+    </header>
+
+    <main id="home">
+      <section class="card">
+        <h2>Formulário</h2>
+        <form id="user-form">
+          <label for="name">Nome</label>
+          <input id="name" name="name" type="text" placeholder="Nome completo" />
+          <label for="email">E-mail</label>
+          <input id="email" name="email" type="email" placeholder="email@exemplo.com" />
+          <label for="role">Perfil</label>
+          <select id="role" name="role">
+            <option value="admin">Admin</option>
+            <option value="editor">Editor</option>
+            <option value="viewer">Visualizador</option>
+          </select>
+          <button id="submit-user" type="submit">Criar usuário</button>
+        </form>
+        <p id="form-result" aria-live="polite"></p>
+      </section>
+
+      <section class="card">
+        <h2>Conteúdo dinâmico</h2>
+        <button id="toggle-panel">Mostrar painel</button>
+        <div id="dynamic-panel" class="hidden">
+          <p>Painel dinâmico visível</p>
+        </div>
+      </section>
+
+      <section class="card" id="usuarios">
+        <h2>Tabela de usuários</h2>
+        <table id="users-table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+            </tr>
+          </thead>
+          <tbody id="users-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Erro</h2>
+        <button id="boom">Disparar erro JS</button>
+        <p id="boom-result"></p>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

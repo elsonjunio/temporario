@@ -43,6 +43,7 @@ class Planner:
             f"Request:\n{request}\n\n"
             f"Discovery evidence (candidate targets, including impact):\n{evidence_block}\n\n"
             f"Available tools:\n{manual}\n\n"
+            f"{feedback_block}"
             'Return ONLY a JSON object with a "steps" list. Each step is:\n'
             '{"tool": "<tool>", "action": "<action>", "params": {...}, '
             '"validate_after": true, "expect": "<optional substring to verify", '

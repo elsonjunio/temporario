@@ -15,6 +15,7 @@ def create_orchestrator_tool(
     *,
     backup_root: str | None = None,
     max_plan_steps: int = 8,
+    exec_retries: int = 1,
     root: str = ".",
     name: str = "orchestrator",
 ) -> ToolSpec:
@@ -30,6 +31,7 @@ def create_orchestrator_tool(
         memory=memory,
         backup_root=backup_root,
         max_plan_steps=max_plan_steps,
+        exec_retries=exec_retries,
         root=root,
     )
     return ToolSpec(
