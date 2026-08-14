@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from src.memory import Memory
-from src.providers.opencode import OpenCodeProvider
+from src.providers.base import BaseProvider
 from src.tools import registry as tool_registry
 from src.tools.registry import ToolRegistry
 from src.utils import (
@@ -14,7 +14,7 @@ from src.utils import (
     parse_tool_call,
 )
 
-DEFAULT_MAX_ITERATIONS = 5
+DEFAULT_MAX_ITERATIONS = 30
 
 
 class Agent:
@@ -29,7 +29,7 @@ class Agent:
 
     def __init__(
         self,
-        provider: OpenCodeProvider,
+        provider: BaseProvider,
         memory: Memory | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         registry: ToolRegistry | None = None,
