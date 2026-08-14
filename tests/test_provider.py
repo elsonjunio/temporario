@@ -26,7 +26,7 @@ class TestOpenCodeProviderRetry(unittest.TestCase):
         provider = OpenCodeProvider(api_key="k", timeout=5, attempts=3)
         payload = {"choices": [{"message": {"content": "ok"}}]}
         with mock.patch(
-            "src.providers.opencode.urllib.request.urlopen",
+            "src.providers.base.urllib.request.urlopen",
             side_effect=[TimeoutError("t"), TimeoutError("t"), _FakeResponse(payload)],
         ):
             result = provider.infer("prompt", "config")
@@ -35,7 +35,7 @@ class TestOpenCodeProviderRetry(unittest.TestCase):
     def test_fails_cleanly_after_all_attempts(self):
         provider = OpenCodeProvider(api_key="k", timeout=5, attempts=2)
         with mock.patch(
-            "src.providers.opencode.urllib.request.urlopen",
+            "src.providers.base.urllib.request.urlopen",
             side_effect=[TimeoutError("t"), TimeoutError("t")],
         ):
             with self.assertRaises(ProviderError) as ctx:
