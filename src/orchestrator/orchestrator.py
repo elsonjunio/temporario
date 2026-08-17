@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+from pathlib import Path
 
 from src.memory import Memory
 from src.orchestrator.discovery import Discovery
@@ -9,6 +10,60 @@ from src.orchestrator.impact import ImpactAssessor
 from src.orchestrator.planner import Planner
 from src.orchestrator.undo import UndoLog
 from src.tools.registry import ToolRegistry
+
+_DOC_EXTENSIONS = {".md", ".txt", ".rst", ".doc", ".docx", ".markdown"}
+_CODE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".java",
+    ".kt",
+    ".kts",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".cs",
+    ".swift",
+    ".scss",
+    ".css",
+    ".html",
+    ".vue",
+    ".svelte",
+}
+_UI_SIGNALS = {
+    "estilo",
+    "style",
+    "design",
+    "catálogo",
+    "catalogo",
+    "catalog",
+    "tela",
+    "page",
+    "componente",
+    "component",
+    "cor",
+    "color",
+    "colour",
+    "tema",
+    "theme",
+    "ui",
+    "css",
+    "layout",
+    "visual",
+}
+
+
+def _has_ui_signal(request: str) -> bool:
+    lowered = request.lower()
+    return any(signal in lowered for signal in _UI_SIGNALS)
+
 
 MANUAL = (
     "orchestrator: plan and execute multi-step filesystem changes end to end. "
@@ -27,9 +82,10 @@ MANUAL = (
     "        request names the exact files to create.\n"
     "      confirm (bool, default false): when false (default) the tool stops\n"
     "        after planning and returns an 'awaiting_confirmation' preview with\n"
-    "        the steps and impact analysis to be executed. Re-run with\n"
-    "        confirm=True only after the user approves; the pending plan is\n"
-    "        reused, not re-planned.\n"
+    "        the steps and impact analysis to be executed.\n"
+    "        When called again with confirm=true (and no request) the pending\n"
+    "        plan is reused, not re-planned. To resume after user approval,\n"
+    "        prefer orchestrator execute confirm=true.\n"
     "    Returns: the plan preview awaiting confirmation, the executed trace,\n"
     "      or a rollback/abort notice.\n"
     "    Strategy: existing files are edited with patch_file; write_file is\n"
@@ -116,9 +172,10 @@ class Orchestrator:
         memory: Memory | None = None,
         *,
         backup_root: str | None = None,
-        max_plan_steps: int = 8,
+        max_plan_steps: int = 16,
         exec_retries: int = 1,
         root: str = ".",
+        discovery_fallback: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.registry = registry
         self.provider = provider
@@ -129,11 +186,37 @@ class Orchestrator:
         self.planner = Planner(provider, registry, max_plan_steps=max_plan_steps)
         self.undo_log = UndoLog(backup_root=backup_root)
         self.executor = Executor(registry, self.undo_log, memory, impact=self.impact)
+        self.discovery_fallback = discovery_fallback
         self.last_evidence: dict[str, Any] | None = None
         self.last_impact: dict[str, Any] | None = None
         self.last_plan: dict[str, Any] | None = None
         self.last_request: str | None = None
         self.last_paths: tuple[str, ...] | None = None
+
+    def _obtain_evidence(
+        self,
+        request: str,
+        terms: list[str] | None,
+        paths: list[str] | None,
+    ) -> dict[str, Any]:
+        """Run the deterministic internal discovery. The discovery subagent is
+        only used as a fallback when its evidence is weak AND the subagent is
+        actually registered (balanced mode). In fast mode the subagent is not
+        registered, so the orchestrator relies solely on its internal
+        discovery and never references the missing subagent."""
+        evidence = self.discovery.discover(request, terms, seed_paths=paths)
+        if (
+            evidence.get("status") != "ok"
+            and self.discovery_fallback is not None
+            and "discovery" in self.registry.list_tools()
+        ):
+            try:
+                fallback = self.discovery_fallback(request, terms, paths)
+            except Exception:
+                fallback = None
+            if fallback:
+                return fallback
+        return evidence
 
     def discover(
         self,
@@ -141,9 +224,32 @@ class Orchestrator:
         terms: list[str] | None = None,
         paths: list[str] | None = None,
     ) -> dict[str, Any]:
-        evidence = self.discovery.discover(request, terms, seed_paths=paths)
+        evidence = self._obtain_evidence(request, terms, paths)
         self.last_evidence = evidence
         return evidence
+
+    @staticmethod
+    def _seeded_targets_look_wrong(request: str, evidence: dict[str, Any]) -> bool:
+        """Detect when seeded ``paths`` point only at documentation while the
+        request is clearly about a UI/style change. In that case the seeded
+        doc is almost certainly NOT the implementation artifact (e.g. a spec
+        markdown mistaken for 'the catalog'), and planning would rewrite docs
+        instead of the real component/style files."""
+        candidates = evidence.get("candidates", [])
+        if not candidates or not _has_ui_signal(request):
+            return False
+        has_code = False
+        all_docs = True
+        for candidate in candidates:
+            path = str(candidate.get("path", ""))
+            suffix = Path(path).suffix.lower()
+            if suffix in _DOC_EXTENSIONS:
+                continue
+            all_docs = False
+            if suffix in _CODE_EXTENSIONS or candidate.get("type") == "new_file":
+                has_code = True
+        # Only flag when every seeded candidate is a doc and none is code.
+        return all_docs and not has_code
 
     def plan(
         self,
@@ -157,9 +263,7 @@ class Orchestrator:
             or self.last_evidence.get("request") != request
             or self.last_paths != paths_key
         ):
-            self.last_evidence = self.discovery.discover(
-                request, terms, seed_paths=paths
-            )
+            self.last_evidence = self._obtain_evidence(request, terms, paths)
         self.last_paths = paths_key
         evidence = self.last_evidence
 
@@ -170,8 +274,45 @@ class Orchestrator:
                 "evidence": evidence,
             }
 
+        if paths and self._seeded_targets_look_wrong(request, evidence):
+            alt = self.discovery.discover(request)
+            suggestion = ""
+            if alt.get("status") == "ok":
+                found = [
+                    c.get("path")
+                    for c in alt.get("candidates", [])
+                    if Path(str(c.get("path", ""))).suffix.lower()
+                    not in _DOC_EXTENSIONS
+                ]
+                if found:
+                    suggestion = (
+                        " Candidates found by keyword discovery (prefer one of "
+                        f"these for a UI/style change): {', '.join(found[:5])}."
+                    )
+            return {
+                "status": "clarify",
+                "message": (
+                    "The seeded target(s) are documentation files, but the "
+                    "request looks like a UI/style change. Confirm the real "
+                    "implementation file (e.g. a component/.css) before "
+                    f"editing; do not rewrite the doc.{suggestion}"
+                ),
+                "evidence": evidence,
+            }
+
         impact = self.impact.assess(request, evidence.get("candidates", []))
         self.last_impact = impact
+
+        mismatches = [
+            c.get("path")
+            for c in evidence.get("candidates", [])
+            if c.get("root_mismatch")
+        ]
+        if mismatches:
+            impact.setdefault("warnings", []).append(
+                "Seeded path(s) did not resolve under the workspace root; "
+                "corrected to the existing file(s): " + ", ".join(mismatches)
+            )
 
         feedback: str | None = None
         attempts = 0
@@ -208,9 +349,7 @@ class Orchestrator:
             or self.last_evidence.get("request") != request
             or self.last_paths != paths_key
         ):
-            self.last_evidence = self.discovery.discover(
-                request, terms, seed_paths=paths
-            )
+            self.last_evidence = self._obtain_evidence(request, terms, paths)
         self.last_paths = paths_key
         evidence = self.last_evidence
         impact = self.impact.assess(request, evidence.get("candidates", []))
@@ -280,6 +419,8 @@ class Orchestrator:
             recommendation = target.get("test_recommendation")
             if recommendation:
                 lines.append(f"    no test setup; {recommendation}")
+        for warning in impact.get("warnings", []):
+            lines.append(f"    warning: {warning}")
         return "\n".join(lines)
 
     def pending(self) -> dict[str, Any]:
@@ -433,11 +574,28 @@ class Orchestrator:
 
     def run(
         self,
-        request: str,
+        request: str | None = None,
         terms: list[str] | None = None,
         confirm: bool = False,
         paths: list[str] | None = None,
     ) -> dict[str, Any]:
+        # When resuming a pending plan, reuse the last request/paths if none
+        # are supplied (the model often drops them on re-run).
+        if request is None:
+            if self.last_request is not None:
+                request = self.last_request
+                if paths is None and self.last_paths is not None:
+                    paths = list(self.last_paths)
+            else:
+                return {
+                    "status": "error",
+                    "error": "invalid_arguments",
+                    "message": (
+                        "orchestrator run requires a 'request' parameter. "
+                        "To resume a pending plan, call orchestrator execute "
+                        "with confirm=true instead."
+                    ),
+                }
         paths_key = tuple(paths) if paths else None
         if (
             self.last_request != request

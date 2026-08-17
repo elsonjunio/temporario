@@ -1,12 +1,59 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
+from src.tools._fs import EXCLUDED_DIRS, is_excluded
 from src.tools.registry import ToolRegistry
 
 DEFAULT_MAX_CANDIDATES = 8
+
+_DOC_EXTENSIONS = {".md", ".txt", ".rst", ".doc", ".docx", ".markdown"}
+_CODE_EXTENSIONS = {
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".java",
+    ".kt",
+    ".kts",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".cs",
+    ".swift",
+    ".scss",
+    ".css",
+    ".html",
+    ".vue",
+    ".svelte",
+}
+_TRAILING_VOWELS = set("aeiou")
+
+
+def normalize_text(value: str) -> str:
+    """Lowercase and strip diacritics so 'catálogo' matches 'catalog'."""
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
+def term_variants(term: str) -> list[str]:
+    """Search variants for a term: the normalized form plus a trailing-vowel
+    stripped form (so 'catalogo' also searches 'catalog')."""
+    base = normalize_text(term)
+    variants = {base}
+    if base and base[-1] in _TRAILING_VOWELS:
+        variants.add(base[:-1])
+    return [v for v in variants if len(v) >= 3]
+
 
 _STOPWORDS = {
     "the",
@@ -48,7 +95,7 @@ _STOPWORDS = {
 
 
 def extract_terms(request: str, limit: int = 8) -> list[str]:
-    words = re.findall(r"[A-Za-z0-9_.\-]+", request.lower())
+    words = re.findall(r"[A-Za-z0-9_.\-]+", normalize_text(request))
     terms = [
         word
         for word in words
@@ -85,13 +132,27 @@ class Discovery:
         )
         return result.get("content", "") if result.get("status") == "success" else ""
 
+    def _resolve_seed(self, raw: str) -> tuple[Path, bool]:
+        """Resolve a seeded path against ``self.root``. Returns (path, mismatch)
+        where ``mismatch`` is True when the literal path does not exist but a
+        file with the same name lives under ``self.root`` (a cwd/root
+        divergence). A mismatched path is pointed at the real existing file so
+        it is never silently treated as a brand-new target."""
+        path = (Path(self.root) / raw).resolve()
+        if path.exists():
+            return path, False
+        match = sorted(Path(self.root).rglob(path.name))
+        if match:
+            return match[0].resolve(), True
+        return path, False
+
     def _seed_candidates(self, paths: list[str]) -> list[dict[str, Any]]:
         """Turn explicit target paths into new-file candidates without
         searching. Relative paths resolve against ``self.root``, so a
         greenfield project can be planned file by file."""
         seen: dict[str, dict[str, Any]] = {}
         for raw in paths:
-            path = (Path(self.root) / raw).resolve()
+            path, mismatch = self._resolve_seed(raw)
             key = str(path)
             if key in seen:
                 continue
@@ -101,6 +162,7 @@ class Discovery:
                 "path": key,
                 "type": "file" if exists else "new_file",
                 "snippet": "",
+                "root_mismatch": mismatch,
             }
         return list(seen.values())
 
@@ -137,15 +199,19 @@ class Discovery:
 
         candidates: dict[str, dict[str, Any]] = {}
         for term in terms:
-            result = self.registry.dispatch(
-                "search_files",
-                "search",
-                pattern=f"*{term}*",
-                path=self.root,
-                recursive=True,
-            )
-            for item in result.get("items", []):
-                if item["path"] not in candidates:
+            for variant in term_variants(term):
+                result = self.registry.dispatch(
+                    "search_files",
+                    "search",
+                    pattern=f"*{variant}*",
+                    path=self.root,
+                    recursive=True,
+                )
+                for item in result.get("items", []):
+                    if item["path"] in candidates:
+                        continue
+                    if is_excluded(item["path"]):
+                        continue
                     candidates[item["path"]] = {
                         "name": item["name"],
                         "path": item["path"],

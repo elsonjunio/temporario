@@ -7,22 +7,56 @@ import re
 from src.memory import Memory
 from src.toolparse import extract_json_object, is_tool_attempt, parse_tool_call
 
-DEFAULT_INSTRUCTIONS = (
-    "You are a helpful agent with access to the tools below. "
-    "When you need to inspect the filesystem, pick one tool and respond with a "
-    "single JSON block exactly like:\n"
+_BASE_INSTRUCTIONS = (
+    "You are a helpful agent with access to the tools below, "
+    "which you must use whenever necessary to meet the user's needs. "
+    "When you need to call a tool, respond with a single JSON block exactly "
+    "like (nothing else):\n"
     "```json\n"
     '{"tool": "<tool_name>", "action": "<action>", "params": {<arguments>}}\n'
     "```\n"
+    "Never describe a tool call in plain prose - if you want to call a tool, "
+    'emit ONLY the JSON block, never a sentence like "tool run(...)".\n'
     "The user message that follows will contain the tool result. Keep issuing "
     "tool calls until you can answer, then reply without a JSON block.\n"
-    "Confirmation flow: when a tool returns 'awaiting_confirmation', stop "
-    "immediately and call no more tools; the plan is relayed to the user "
-    "automatically. Never execute the plan yourself. When the user approves, "
-    "resume through the tool's confirm mechanism (e.g. orchestrator execute "
-    "with confirm=true) -- do not re-plan the same request and do not switch "
-    "to other tools for the same task."
 )
+
+#: Execution modes: every mode uses the base toolset (+ navigation) directly.
+#: Subagents (orchestrator/planner/discovery/executor) are disabled, so the
+#: routing text instructs the model to investigate and edit with the base
+#: tools itself - there is no separate planning/confirmation layer.
+_BASE_MODE_TEXT = (
+    "Route the request before acting:\n"
+    "- SIMPLE LOOKUPS (does a file exist, find a term, read a snippet, list a "
+    "directory): call search_files/grep_files/read_file/list_dir directly.\n"
+    "- QUESTION / ANALYSIS (understand, evaluate, assess, how something "
+    'works, "why it breaks"): investigate read-only with the base tools '
+    "(read_file, list_dir, search_files, grep_files) and answer directly. "
+    "Never plan or execute anything for a question - an evaluation never "
+    "changes files.\n"
+    "- OPERATION / CHANGE (create, edit, fix, migrate, refactor, install, "
+    "configure, or any request that asks to evaluate the cause AND "
+    "correct/fix something): investigate first (read/list/search/grep the "
+    "relevant files) and then edit directly with write_file/patch_file/"
+    "run_command. Work in a loop - issue tool calls until the task is done, "
+    "then reply without a JSON block.\n"
+    "- WEB NAVIGATION: when the user asks to browse or interact with a "
+    "website, use the 'navigation' tool.\n"
+    "No orchestrator, planner, discovery or executor subagents are available "
+    "- do the investigation and the edits yourself with the tools above. "
+    "Edits apply immediately (there is no separate confirmation step or "
+    "automatic rollback), so be careful with destructive operations.\n"
+)
+
+AGENT_MODES: dict[str, str] = {
+    "fast": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
+    "balanced": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
+    "precision": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
+}
+
+DEFAULT_MODE = "fast"
+
+DEFAULT_INSTRUCTIONS = AGENT_MODES[DEFAULT_MODE]
 
 _APPROVAL_TOKENS = {
     "sim",

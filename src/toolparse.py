@@ -7,14 +7,54 @@ from typing import Any
 _FENCED_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 _INVOKE_RE = re.compile(
-    r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"']\s*>(.*?)</invoke>",
+    r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</invoke>",
     re.DOTALL,
 )
 
 _PARAM_RE = re.compile(
-    r"<parameter(?:\s+name\s*=\s*[\"']([^\"']*)[\"'])?\s*>(.*?)</parameter>",
+    r"<parameter(?:\s+name\s*=\s*[\"']([^\"']*)[\"'])?[^>]*>(.*?)</parameter>",
     re.DOTALL,
 )
+
+# Fullwidth ASCII variants some tokenizers leak into the output (e.g. the
+# ``<｜DSM｜tool_calls>`` marker big-pickle emits). Normalized to ASCII so the
+# XML/marker regexes below still match.
+_FULLWIDTH_MAP = str.maketrans(
+    "".join(chr(0xFF01 + i) for i in range(94)),
+    "".join(chr(0x21 + i) for i in range(94)),
+)
+
+# A special-token artifact wrapped around tag names: ``<｜DSM｜tool_calls>``
+# becomes ``<|DSM|tool_calls>`` after fullwidth normalization (big-pickle
+# emits ``<｜｜DSM｜｜tool_calls>`` / double pipes). Strip the ``|TOKEN|``
+# prefix from both opening and closing tags so ``<invoke>`` / ``</invoke>``
+# are matched again. Only rewritten when the resulting tag is a known markup
+# tag, so prose like ``<|a|b>`` is never mangled.
+_ARTIFACT_TAGS = {
+    "tool_calls",
+    "tool_call",
+    "function_call",
+    "function_calls",
+    "invoke",
+    "parameter",
+    "dsml",
+}
+_TAG_ARTIFACT_RE = re.compile(
+    r"(</?)\s*\|+\s*[A-Za-z0-9_]*\s*\|+\s*([A-Za-z_][A-Za-z0-9_-]*)(?=[\s>])"
+)
+
+
+def _sanitize_tags(text: str) -> str:
+    """Normalize fullwidth punctuation and strip ``<|TOKEN|tag`` artifacts."""
+    text = text.translate(_FULLWIDTH_MAP)
+
+    def _fix(match: re.Match) -> str:
+        if match.group(2) in _ARTIFACT_TAGS:
+            return match.group(1) + match.group(2)
+        return match.group(0)
+
+    return _TAG_ARTIFACT_RE.sub(_fix, text)
+
 
 # Tool -> default action, used when the model omits the "action" key.
 DEFAULT_ACTIONS = {
@@ -28,6 +68,9 @@ DEFAULT_ACTIONS = {
     "move_file": "move",
     "run_command": "run",
     "orchestrator": "run",
+    "discovery": "run",
+    "planner": "run",
+    "executor": "run",
 }
 
 # Common spellings small models use instead of the registered tool names.
@@ -54,24 +97,31 @@ _RESERVED = {"tool", "action", "params", "name"}
 _MARKER_KEYS = {"call", "tool_call", "tool_name", "tool"}
 
 _MARKER_PATTERNS = [
-    # <|tool_call|>read_file / <|tool_call>call:read_file
-    r"<\|tool_call\|?>\s*(?:call\s*[:=]\s*)?([A-Za-z_][A-Za-z0-9_.-]*)",
-    # call:read_file / call = read_file
-    r"\bcall\s*[:=]\s*([A-Za-z_][A-Za-z0-9_.-]*)",
+    # <|tool_call|>read_file / <|tool_call>call:discovery:read
+    r"<\|tool_call\|?>\s*(?:call\s*[:=]\s*)?([A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?)",
+    # call:read_file / call = discovery:read
+    r"\bcall\s*[:=]\s*([A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?)",
     # tool_call: read_file
-    r"\btool_call\s*[:=]\s*([A-Za-z_][A-Za-z0-9_.-]*)",
+    r"\btool_call\s*[:=]\s*([A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?)",
     # tool_name: "read_file"
-    r"\btool_name\s*[:=]\s*[\"']?([A-Za-z_][A-Za-z0-9_.-]*)[\"']?",
+    r"\btool_name\s*[:=]\s*[\"']?([A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?)[\"']?",
     # tool: "read_file"
-    r"\btool\s*[:=]\s*[\"']?([A-Za-z_][A-Za-z0-9_.-]*)[\"']?",
+    r"\btool\s*[:=]\s*[\"']?([A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?)[\"']?",
     # <invoke name="read_file">
     r"<invoke\s+name\s*=\s*[\"']([^\"']+)[\"']",
+    # bare fused tool:action at line start (e.g. "list_dir:list\n{...}")
+    r"(?m)^\s*([A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*)",
 ]
 
 _DQ_STRING_RE = re.compile(r'("[^"\\]*(?:\\.[^"\\]*)*")')
 
 _KEYVAL_QUOTED_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*[\"']([^\"']*)[\"']")
 _KEYVAL_RAW_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*([^,\s\]\}]+)")
+
+# <|tool_call>call:tool:action followed by one "key: value" per line, where the
+# value extends to the end of the line (gemma-style). Anchored so prose inside a
+# value (e.g. "arquivos: use o discovery.") is never mistaken for a key.
+_MARKER_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(.*?)\s*$")
 
 
 def _segments(text: str) -> list[str]:
@@ -227,6 +277,12 @@ def extract_json_object(text: str) -> Any | None:
 
 def _normalize_tool(name: str) -> str | None:
     candidate = name.strip().strip('"').strip("'")
+    # Small models fuse tool + action: "discovery:list_files" / "read_file:read".
+    if ":" in candidate:
+        head = candidate.partition(":")[0].strip()
+        head_norm = _normalize_tool(head)
+        if head_norm:
+            return head_norm
     if candidate in DEFAULT_ACTIONS:
         return candidate
     if candidate in TOOL_ALIASES:
@@ -248,6 +304,19 @@ def _tool_from_text(text: str) -> str | None:
             if normalized:
                 return normalized
     return None
+
+
+def _action_from_text(text: str) -> str:
+    """Recover a ``tool:action`` suffix from call markers (e.g. the ``read``
+    in ``<|tool_call>call:discovery:read``)."""
+    for pattern in _MARKER_PATTERNS:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            token = match.group(1)
+            if ":" in token:
+                head, _, tail = token.partition(":")
+                if _normalize_tool(head):
+                    return tail.strip()
+    return ""
 
 
 def _has_call_signal(text: str) -> bool:
@@ -275,21 +344,79 @@ def _params_from_text(text: str) -> dict[str, str]:
     return params
 
 
+def _marker_params(text: str) -> dict[str, Any] | None:
+    """Parse the gemma ``<|tool_call>call:tool:action`` param block: one
+    ``key: value`` per line, value spanning to end of line. Structured values
+    (arrays/dicts/bools/numbers) are JSON-parsed; returns None when the text has
+    no such param lines, so callers keep the generic fuzzy fallback."""
+    params: dict[str, Any] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        # Skip bare fused tool:action marker lines (e.g. "discovery:run").
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*", stripped):
+            continue
+        match = _MARKER_LINE_RE.match(line)
+        if not match:
+            continue
+        key, raw = match.group(1), match.group(2).strip()
+        if key in _RESERVED or key in _MARKER_KEYS:
+            continue
+        raw = raw.rstrip(",").strip()
+        if not raw:
+            continue
+        params[key] = _structured_value(raw)
+    return params or None
+
+
+def _structured_value(raw: str) -> Any:
+    """Best-effort value: JSON literal (array/dict/bool/number/quoted string)
+    when valid, otherwise the raw string."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
 def _call_from_data(data: dict[str, Any], text: str) -> dict[str, Any] | None:
     """Build a normalized call from a parsed JSON object. The tool name may
     live in the JSON ``tool`` key or in call markers inside the text."""
     tool = data.get("tool")
     tool = tool if isinstance(tool, str) else None
-    if tool:
-        if tool.strip():
-            tool = _normalize_tool(tool) or tool.strip()
-    if not tool:
-        tool = _tool_from_text(text)
-    if not tool:
-        return None
-
     action = data.get("action")
     action = action if isinstance(action, str) else ""
+
+    if tool:
+        stripped = tool.strip()
+        # Small models often fuse tool + action: "discovery:list_files".
+        if ":" in stripped:
+            head, _, tail = stripped.partition(":")
+            if _normalize_tool(head):
+                tool = head
+                if not action and tail.strip():
+                    action = tail.strip()
+            else:
+                tool = stripped
+        else:
+            tool = _normalize_tool(stripped) or stripped
+    if not tool:
+        tool = _tool_from_text(text)
+        if tool and not action:
+            action = _action_from_text(text)
+    if not tool:
+        # Small models sometimes emit the tool name as the single top-level key:
+        # {"write_file": {"file_path": "x", "content": "..."}}.
+        if len(data) == 1:
+            key = next(iter(data))
+            normalized = _normalize_tool(key)
+            if normalized and isinstance(data[key], dict):
+                tool = normalized
+                nested: dict[str, Any] = dict(data[key])
+                return {
+                    "tool": tool,
+                    "action": action or DEFAULT_ACTIONS.get(tool, "run"),
+                    "params": nested,
+                }
+        return None
 
     params = data.get("params")
     if not isinstance(params, dict):
@@ -318,11 +445,11 @@ def _parse_invoke_xml(text: str) -> dict[str, Any] | None:
             continue
 
         body = match.group(2)
-        named: dict[str, str] = {}
-        unnamed: list[str] = []
+        named: dict[str, Any] = {}
+        unnamed: list[Any] = []
         for param in _PARAM_RE.finditer(body):
             key = param.group(1)
-            value = param.group(2).strip()
+            value = _structured_value(param.group(2).strip())
             if key:
                 named[key] = value
             else:
@@ -362,6 +489,7 @@ def parse_tool_call(text: str) -> dict[str, Any] | None:
 
     Returns None when the response looks like a plain answer.
     """
+    text = _sanitize_tags(text)
     xml_call = _parse_invoke_xml(text)
     if xml_call is not None:
         return xml_call
@@ -389,10 +517,18 @@ def parse_tool_call(text: str) -> dict[str, Any] | None:
 
     tool = _tool_from_text(text)
     if tool is not None and _has_call_signal(text):
+        marker = _marker_params(text)
+        if marker is not None:
+            params: dict[str, Any] = dict(marker)
+            # Keep same-line quoted pairs too (e.g. pattern="--color" after the marker).
+            for match in _KEYVAL_QUOTED_RE.finditer(text):
+                params.setdefault(match.group(1), match.group(2))
+        else:
+            params = _params_from_text(text)
         return {
             "tool": tool,
-            "action": DEFAULT_ACTIONS.get(tool, "run"),
-            "params": _params_from_text(text),
+            "action": _action_from_text(text) or DEFAULT_ACTIONS.get(tool, "run"),
+            "params": params,
         }
 
     return None
@@ -407,6 +543,7 @@ def is_tool_attempt(text: str) -> bool:
     alone are not enough: there must be a call marker or a tool-call signature
     (``tool``/``action``/``params`` keys or a known tool name in call syntax).
     """
+    text = _sanitize_tags(text)
     if re.search(
         r"<\|?tool_call|<invoke|\bcall\s*[:=]|\btool(_name)?\s*[:=]",
         text,

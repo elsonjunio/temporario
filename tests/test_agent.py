@@ -3,6 +3,7 @@ import unittest
 from src.agent import Agent
 from src.memory import Memory
 from src.tools.registry import build_default_registry
+from src.utils import AGENT_MODES
 
 
 class FakeProvider:
@@ -132,6 +133,27 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(agent.run("hi"), "plain answer")
         self.assertNotIn("orchestrator", agent.registry.list_tools())
 
+    def test_instructions_param_flows_into_config(self):
+        provider = FakeProvider(["ok"])
+        agent = Agent(provider=provider, instructions=AGENT_MODES["precision"])
+        agent.run("hi")
+        self.assertEqual(len(provider.calls), 1)
+        config = provider.calls[0][1]
+        self.assertIn("write_file", config)
+        self.assertNotIn("planner run", config)
+
+    def test_instructions_can_switch_at_runtime(self):
+        provider = FakeProvider(["ok", "ok"])
+        agent = Agent(provider=provider)
+        agent.run("hi")
+        agent.instructions = AGENT_MODES["precision"]
+        agent.run("hi")
+        configs = [call[1] for call in provider.calls]
+        self.assertIn("write_file", configs[0])
+        self.assertIn("write_file", configs[1])
+        self.assertNotIn("orchestrator run", configs[0])
+        self.assertNotIn("planner run", configs[1])
+
 
 class TestConfirmationFlow(unittest.TestCase):
     def _agent_with_orchestrator(self, provider):
@@ -242,6 +264,33 @@ class TestConfirmationFlow(unittest.TestCase):
         self.assertNotIn("maximum", result)
         self.assertEqual(len(orch.calls), 1)
         self.assertIsNotNone(agent._pending_call)
+
+    def test_tool_hint_is_forwarded_to_next_prompt(self):
+        tool = type(
+            "HintTool",
+            (),
+            {
+                "name": "hinty",
+                "get_manual": lambda self: "hinty manual\nActions:\nx",
+                "dispatch": lambda self, action, **p: {
+                    "status": "success",
+                    "hint": "Quick lookup only. Continue with discovery run.",
+                },
+            },
+        )()
+        provider = FakeProvider(
+            [
+                '```json\n{"tool": "hinty", "action": "x", "params": {}}\n```',
+                "final",
+            ]
+        )
+        registry = build_default_registry()
+        agent = Agent(provider=provider, registry=registry, extra_tools=[tool])
+        result = agent.run("investigue")
+        self.assertEqual(result, "final")
+        self.assertIn(
+            "Quick lookup only. Continue with discovery run.", provider.calls[1][0]
+        )
 
 
 if __name__ == "__main__":

@@ -10,15 +10,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.agent import Agent
 from src.context import ContextCompressor
 from src.memory import Memory
-from src.navigation import create_navigation_tool
-from src.orchestrator import create_orchestrator_tool
+from src.modes import (
+    MODE_NAMES,
+    apply_mode,
+    build_agent_specs,
+    switch_mode,
+)
 
 from src.providers.base import ProviderError
 from src.providers.opencode import OpenCodeProvider
 from src.providers.lmstudio import LMStudioProvider
 
 from src.tools.registry import build_default_registry
-from src.utils import build_environment_info
+from src.utils import AGENT_MODES, DEFAULT_MODE, build_environment_info
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -38,14 +42,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-plan-steps",
         type=int,
-        default=8,
-        help="max steps per orchestrator plan (default: 8).",
+        default=16,
+        help="max steps per orchestrator plan (default: 16).",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=MODE_NAMES,
+        default=DEFAULT_MODE,
+        help=f"execution mode (default: {DEFAULT_MODE}): fast, balanced or "
+        "precision; controls which subagent tools are registered.",
     )
     parser.add_argument(
         "--prompt",
         default=None,
         help="run a single non-interactive prompt and exit (useful for tests "
         "and scripting phases).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="render executor plan previews, questions and results with extra "
+        "detail (plan tasks, tool calls).",
     )
     return parser.parse_args(argv)
 
@@ -85,17 +102,16 @@ def main(argv: list[str] | None = None) -> None:
 
     memory = Memory(compressor=ContextCompressor(provider=provider))
 
-    orchestrator = create_orchestrator_tool(
+    specs = build_agent_specs(
         registry,
         provider,
         memory,
         root=workspace,
         max_plan_steps=args.max_plan_steps,
+        verbose=args.verbose,
+        interactive=args.prompt is None,
     )
-    registry.register(orchestrator.name, orchestrator)
-
-    navigation = create_navigation_tool(provider)
-    registry.register(navigation.name, navigation)
+    apply_mode(registry, args.mode, specs)
 
     agent = Agent(
         provider=provider,
@@ -103,6 +119,7 @@ def main(argv: list[str] | None = None) -> None:
         registry=registry,
         max_iterations=args.max_iterations,
         environment=build_environment_info(workspace=workspace),
+        instructions=AGENT_MODES[args.mode],
     )
 
     if args.prompt:
@@ -113,8 +130,11 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(1)
         return
 
-    print(f"--- Agent chat (model={provider.model}) ---")
-    print("Type a question, or /quit to exit.\n")
+    print(f"--- Agent chat (model={provider.model}, mode={args.mode}) ---")
+    print(
+        "Type a question, /mode fast|balanced|precision to switch execution "
+        "mode, or /quit to exit.\n"
+    )
 
     while True:
         try:
@@ -126,6 +146,9 @@ def main(argv: list[str] | None = None) -> None:
             continue
         if question.lower() in {"/quit", "/exit", "/bye"}:
             break
+        if question.lower().startswith("/mode"):
+            args.mode = switch_mode(registry, specs, agent, args.mode, question)
+            continue
 
         try:
             answer = agent.run(question, max_iterations=args.max_iterations)

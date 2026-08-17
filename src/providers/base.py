@@ -153,6 +153,28 @@ class BaseProvider:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ProviderError(f"{self.label} HTTP {exc.code}: {detail}") from exc
 
+    def _log_chat(
+        self, messages: list[dict[str, Any]], payload: dict[str, Any]
+    ) -> None:
+        """Append one raw chat exchange to the ``AGENT_LOG`` JSONL file (off
+        when the env var is unset). Used to debug how a model emits tool calls."""
+        path = os.getenv("AGENT_LOG")
+        if not path:
+            return
+        record = {
+            "model": self.model,
+            "messages": messages,
+            "response": payload,
+        }
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            return
+
     def infer(self, user_prompt: str, config: str, **settings: Any) -> str:
         """Send a two-part prompt: the user message plus the configuration prompt.
 
@@ -165,6 +187,7 @@ class BaseProvider:
         ]
 
         payload = self.chat(messages, **settings)
+        self._log_chat(messages, payload)
 
         try:
             content = payload["choices"][0]["message"]["content"]

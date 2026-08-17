@@ -35,6 +35,7 @@ class Agent:
         registry: ToolRegistry | None = None,
         extra_tools: list[Any] | None = None,
         environment: str | None = None,
+        instructions: str | None = None,
     ) -> None:
         self.provider = provider
         self.memory = memory if memory is not None else Memory()
@@ -45,6 +46,7 @@ class Agent:
         self.environment = environment or build_environment_info(
             workspace=str(Path.cwd())
         )
+        self.instructions = instructions
         self._pending_call: dict[str, Any] | None = None
 
     def run(
@@ -74,6 +76,7 @@ class Agent:
                 tool_manuals=self.registry.get_manual(),
                 memory=self.memory,
                 environment=self.environment,
+                instructions=self.instructions,
             )
             response = self.provider.infer(current_prompt, config, **settings)
 
@@ -102,8 +105,11 @@ class Agent:
             if result.get("status") in ("aborted", "failed"):
                 self._pending_call = None
 
-            current_prompt = (
-                f"Tool result:\n{result}\n\n"
+            prompt = f"Tool result:\n{result}\n\n"
+            hint = result.get("hint")
+            if hint:
+                prompt += f"Note: {hint}\n\n"
+            current_prompt = prompt + (
                 "If that answers the request, give your final answer now "
                 "(no JSON block). Otherwise keep working with the tools."
             )
