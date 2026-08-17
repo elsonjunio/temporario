@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.agent import Agent
 from src.context import ContextCompressor, estimate_tokens
 from src.memory import Memory
-from src.orchestrator import create_orchestrator_tool
+from src.modes import apply_mode, build_agent_specs, switch_mode
 
 from src.providers.base import ProviderError
 from src.providers.opencode import OpenCodeProvider
@@ -17,7 +17,7 @@ from src.providers.lmstudio import LMStudioProvider
 
 from src.tools.registry import build_default_registry
 from src.ui import ChatUI
-from src.utils import build_environment_info
+from src.utils import AGENT_MODES, DEFAULT_MODE, build_environment_info
 
 
 def build_provider():
@@ -40,7 +40,7 @@ def main() -> None:
     workspace = os.path.abspath(os.getcwd())
     provider = build_provider()
 
-    ui = ChatUI(model=provider.model, workspace=workspace)
+    ui = ChatUI(model=provider.model, workspace=workspace, mode=DEFAULT_MODE)
     ui.banner()
 
     registry = build_default_registry()
@@ -55,25 +55,30 @@ def main() -> None:
 
     memory = Memory(compressor=ContextCompressor(provider=provider))
 
-    orchestrator = create_orchestrator_tool(
+    specs = build_agent_specs(
         registry,
         provider,
         memory,
         root=workspace,
+        verbose=os.getenv("EXECUTOR_VERBOSE") == "1",
     )
-    registry.register(orchestrator.name, orchestrator)
+    apply_mode(registry, DEFAULT_MODE, specs)
 
     agent = Agent(
         provider=provider,
         memory=memory,
         registry=registry,
         environment=build_environment_info(workspace=workspace),
+        instructions=AGENT_MODES[DEFAULT_MODE],
     )
 
     ui.show_info(
         "Digite uma pergunta; linha em branco envia a mensagem. "
+        "/mode troca o modo de execução (fast|balanced|precision), "
         "/quit encerra, /help lista os comandos."
     )
+
+    current_mode = DEFAULT_MODE
 
     while True:
         try:
@@ -89,6 +94,10 @@ def main() -> None:
             continue
         if question.lower() in {"/quit", "/exit", "/bye"}:
             break
+        if question.lower().startswith("/mode"):
+            current_mode = switch_mode(registry, specs, agent, current_mode, question)
+            ui.mode = current_mode
+            continue
         if question.lower() == "/help":
             ui.show_help()
             continue

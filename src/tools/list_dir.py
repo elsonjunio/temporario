@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Any
 
+from src.tools._fs import EXCLUDED_DIRS
 from src.tools.base import ToolSpec
 
 
@@ -50,6 +53,9 @@ def handle_list_dir(
 
             for idx, child in enumerate(children):
 
+                if child.name in EXCLUDED_DIRS:
+                    continue
+
                 is_last = idx == len(children) - 1
 
                 connector = "└── " if is_last else "├── "
@@ -75,30 +81,39 @@ def handle_list_dir(
             "tree": tree_lines,
         }
 
-    items = []
+    items: list[dict[str, Any]] = []
 
     if recursive:
 
-        for item in root.rglob("*"):
-
-            relative_depth = len(item.relative_to(root).parts)
-
+        for current, dirs, files in os.walk(root, followlinks=False):
+            # Prune dependency / cache directories so a recursive listing of a
+            # project never pulls in node_modules, .git, .angular, etc.
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+            relative_depth = len(Path(current).relative_to(root).parts)
             if relative_depth > max_depth:
+                dirs[:] = []
                 continue
-
-            if extension and item.is_file():
-
-                if item.suffix.lower() != extension.lower():
+            for name in dirs:
+                items.append(
+                    {
+                        "name": name,
+                        "path": str(Path(current) / name),
+                        "type": "directory",
+                        "size": None,
+                    }
+                )
+            for name in files:
+                if extension and Path(name).suffix.lower() != extension.lower():
                     continue
-
-            items.append(
-                {
-                    "name": item.name,
-                    "path": str(item),
-                    "type": ("directory" if item.is_dir() else "file"),
-                    "size": (item.stat().st_size if item.is_file() else None),
-                }
-            )
+                file_path = Path(current) / name
+                items.append(
+                    {
+                        "name": name,
+                        "path": str(file_path),
+                        "type": "file",
+                        "size": file_path.stat().st_size,
+                    }
+                )
 
     else:
 

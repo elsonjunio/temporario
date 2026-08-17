@@ -23,6 +23,7 @@ SLASH_COMMANDS = [
     ("/help", "mostra esta ajuda"),
     ("/clear", "limpa a tela"),
     ("/context", "mostra o contexto e a estimativa de tokens"),
+    ("/mode", "troca o modo de execução (fast|balanced|precision)"),
 ]
 
 COMMAND_NAMES = [name for name, _ in SLASH_COMMANDS]
@@ -68,11 +69,13 @@ class ChatUI:
         history: str | None = DEFAULT_HISTORY,
         model: str = "",
         workspace: str = "",
+        mode: str = "",
         interactive: bool | None = None,
     ) -> None:
         self.console = console or Console()
         self.model = model
         self.workspace = workspace
+        self.mode = mode
         self.session: Any = None
         self._interactive = sys.stdin.isatty() if interactive is None else interactive
         if session is not None:
@@ -118,13 +121,18 @@ class ChatUI:
             return None
 
     def _toolbar(self) -> list[tuple[str, str]]:
-        info = f" modelo: {self.model or '?'}  |  workspace: {self.workspace}"
+        info = f" modelo: {self.model or '?'}"
+        if self.mode:
+            info += f"  |  modo: {self.mode}"
+        info += f"  |  workspace: {self.workspace}"
         return [("class:toolbar", info)]
 
     def banner(self) -> None:
         header = Text()
         header.append("Bicicleta com Rodinhas", style="bold cyan")
         header.append(f"\nmodelo: {self.model or '?'}", style="dim")
+        if self.mode:
+            header.append(f"\nmodo: {self.mode}", style="dim")
         header.append(f"\nworkspace: {self.workspace}", style="dim")
         self.console.print(Panel(header, border_style="cyan", padding=(1, 2)))
 

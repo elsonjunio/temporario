@@ -2,6 +2,9 @@ import unittest
 
 from src.memory import Memory
 from src.utils import (
+    AGENT_MODES,
+    DEFAULT_INSTRUCTIONS,
+    DEFAULT_MODE,
     build_config_prompt,
     build_environment_info,
     classify_followup,
@@ -54,6 +57,50 @@ class TestBuildConfigPrompt(unittest.TestCase):
     def test_default_instructions(self):
         config = build_config_prompt("manual")
         self.assertIn('{"tool"', config)
+
+    def test_agent_modes_exist(self):
+        self.assertEqual(set(AGENT_MODES), {"fast", "balanced", "precision"})
+        self.assertEqual(DEFAULT_MODE, "fast")
+        self.assertEqual(DEFAULT_INSTRUCTIONS, AGENT_MODES["fast"])
+
+    def test_base_instructions_forbid_prose_tool_calls(self):
+        text = AGENT_MODES["fast"]
+        self.assertIn("Never describe a tool call in plain prose", text)
+        self.assertIn("emit ONLY the JSON block", text)
+
+    def _assert_base_only(self, text):
+        self.assertIn("QUESTION / ANALYSIS", text)
+        self.assertIn("an evaluation never changes files", text)
+        self.assertIn("write_file", text)
+        self.assertIn("navigation", text)
+        # Must not instruct the model to INVOKE any disabled subagent.
+        for invoke in (
+            "orchestrator run",
+            "discovery run",
+            "planner run",
+            "executor run",
+            "REPLAN_REQUIRED",
+        ):
+            self.assertNotIn(invoke, text)
+
+    def test_fast_mode_instructions(self):
+        self._assert_base_only(AGENT_MODES["fast"])
+
+    def test_fast_mode_routes_analysis_to_base_tools(self):
+        text = AGENT_MODES["fast"]
+        self.assertIn("QUESTION / ANALYSIS", text)
+        self.assertIn("an evaluation never changes files", text)
+
+    def test_balanced_mode_instructions(self):
+        self._assert_base_only(AGENT_MODES["balanced"])
+
+    def test_precision_mode_instructions(self):
+        self._assert_base_only(AGENT_MODES["precision"])
+
+    def test_build_config_prompt_with_custom_instructions(self):
+        config = build_config_prompt("manual", instructions=AGENT_MODES["precision"])
+        self.assertIn("write_file", config)
+        self.assertNotIn("planner run", config)
 
     def test_environment_included(self):
         env = build_environment_info(workspace="/tmp/ws")

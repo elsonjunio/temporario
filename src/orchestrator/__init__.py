@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from src.memory import Memory
 from src.orchestrator.orchestrator import MANUAL, Orchestrator
@@ -18,12 +18,19 @@ def create_orchestrator_tool(
     exec_retries: int = 1,
     root: str = ".",
     name: str = "orchestrator",
+    discovery_fallback: Callable[..., dict[str, Any]] | None = None,
 ) -> ToolSpec:
     """Build the special orchestrator tool bound to a registry and provider.
 
     Registered via ``ToolRegistry.register(name, spec)``. If it is never
     registered (or unregistered later), the agent keeps working with the base
     tools — low coupling by design.
+
+    ``discovery_fallback`` is an optional callable(request, terms, paths) that
+    returns a discovery evidence dict. It is invoked automatically when the
+    internal keyword discovery returns ``status != "ok"`` (balanced mode):
+    the subagent's report fills the gap before planning. Returning poor
+    evidence still aborts the flow.
     """
     orch = Orchestrator(
         registry=registry,
@@ -33,6 +40,7 @@ def create_orchestrator_tool(
         max_plan_steps=max_plan_steps,
         exec_retries=exec_retries,
         root=root,
+        discovery_fallback=discovery_fallback,
     )
     return ToolSpec(
         name=name,

@@ -7,6 +7,7 @@ from src.orchestrator import create_orchestrator_tool
 from src.orchestrator.discovery import Discovery
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.undo import UndoLog
+from src.tools.base import ToolSpec
 from src.tools.registry import build_default_registry
 
 
@@ -44,6 +45,19 @@ class OrchestratorTestCase(unittest.TestCase):
             root=str(self.root),
         )
 
+    def _register_discovery(self):
+        """Register a discovery subagent so the orchestrator's fallback gate
+        (which only fires when the subagent is actually available, i.e.
+        balanced mode) opens. Fast mode leaves it unregistered."""
+        self.registry.register(
+            "discovery",
+            ToolSpec(
+                name="discovery",
+                handlers={"run": lambda **kwargs: {"status": "success"}},
+                manual="",
+            ),
+        )
+
 
 class TestDiscovery(OrchestratorTestCase):
     def test_finds_target(self):
@@ -58,6 +72,170 @@ class TestDiscovery(OrchestratorTestCase):
         discovery = Discovery(self.registry, root=str(self.root))
         result = discovery.discover("xyzzy zorp unknown")
         self.assertEqual(result["status"], "poor")
+
+
+class TestDiscoveryFallback(OrchestratorTestCase):
+    """The orchestrator's discovery fallback (balanced mode) fills gaps when
+    the internal keyword discovery returns weak evidence."""
+
+    def test_fallback_used_when_internal_poor(self):
+        new_path = self.root / "generated" / "out.txt"
+        calls = []
+
+        def fallback(request, terms, paths):
+            calls.append((request, terms, paths))
+            return {
+                "status": "ok",
+                "request": request,
+                "terms": terms or [],
+                "reason": "filled by subagent",
+                "count": 1,
+                "candidates": [
+                    {
+                        "name": "out.txt",
+                        "path": str(new_path),
+                        "type": "new_file",
+                        "snippet": "",
+                    }
+                ],
+                "source": "discovery_subagent",
+            }
+
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "write_file",
+                                "action": "write",
+                                "params": {
+                                    "file_path": str(new_path),
+                                    "content": "x",
+                                },
+                                "validate_after": True,
+                                "description": "write out.txt",
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        orch = Orchestrator(
+            self.registry,
+            provider,
+            root=str(self.root),
+            discovery_fallback=fallback,
+        )
+        self._register_discovery()
+        plan = orch.plan("create something unusual")
+        self.assertEqual(plan["status"], "ok")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "create something unusual")
+        evidence = orch.last_evidence
+        self.assertEqual(evidence["status"], "ok")
+        self.assertEqual(evidence["source"], "discovery_subagent")
+
+    def test_fallback_not_invoked_when_internal_ok(self):
+        (self.root / "notes.txt").write_text("hi\n")
+        calls = []
+
+        def fallback(request, terms, paths):
+            calls.append(request)
+            return {"status": "poor", "request": request, "count": 0, "candidates": []}
+
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "read_file",
+                                "action": "read",
+                                "params": {"file_path": str(self.root / "notes.txt")},
+                                "description": "read notes",
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        orch = Orchestrator(
+            self.registry,
+            provider,
+            root=str(self.root),
+            discovery_fallback=fallback,
+        )
+        plan = orch.plan("change something in notes.txt")
+        self.assertEqual(plan["status"], "ok")
+        self.assertEqual(calls, [])
+
+    def test_fallback_poor_still_aborts(self):
+        calls = []
+
+        def fallback(request, terms, paths):
+            calls.append(request)
+            return {
+                "status": "poor",
+                "request": request,
+                "reason": "still nothing found",
+                "count": 0,
+                "candidates": [],
+            }
+
+        provider = FakeProvider()
+        orch = Orchestrator(
+            self.registry,
+            provider,
+            root=str(self.root),
+            discovery_fallback=fallback,
+        )
+        self._register_discovery()
+        plan = orch.plan("qwerty zorp nope")
+        self.assertEqual(plan["status"], "aborted")
+        self.assertEqual(plan["reason"], "still nothing found")
+        self.assertEqual(len(calls), 1)
+
+    def test_discover_uses_fallback_too(self):
+        calls = []
+
+        def fallback(request, terms, paths):
+            calls.append(request)
+            return {
+                "status": "ok",
+                "request": request,
+                "count": 0,
+                "candidates": [],
+            }
+
+        orch = Orchestrator(
+            self.registry,
+            FakeProvider(),
+            root=str(self.root),
+            discovery_fallback=fallback,
+        )
+        self._register_discovery()
+        result = orch.discover("qwerty zorp nope")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(calls), 1)
+
+    def test_create_orchestrator_tool_passes_fallback(self):
+        calls = []
+
+        def fallback(request, terms, paths):
+            calls.append(request)
+            return {"status": "ok", "request": request, "count": 0, "candidates": []}
+
+        tool = create_orchestrator_tool(
+            self.registry,
+            FakeProvider(),
+            root=str(self.root),
+            discovery_fallback=fallback,
+        )
+        self._register_discovery()
+        result = tool.dispatch("discover", request="qwerty zorp nope")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(calls), 1)
 
     def test_explicit_terms(self):
         (self.root / "target.txt").write_text("hi\n")
