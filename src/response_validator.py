@@ -136,6 +136,111 @@ _TOOL_HINT_PATTERNS: list[re.Pattern[str]] = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# Phantom action patterns – the model claims to have DONE something (past
+# tense, mutations only) without actually calling a tool.  Read-only verbs
+# (check, read, analyze, etc.) are intentionally excluded.
+# ---------------------------------------------------------------------------
+
+# PT-BR: explicit past-tense mutation verbs (1st/2nd/3rd person).
+# Infinitive forms (criar, atualizar, etc.) are intentionally excluded.
+_PHANTOM_PT_VERBS = (
+    # criação
+    r"criei|criou|criamos"
+    r"|adicionei|adicionou|adicionamos"
+    r"|gerei|gerou|geramos"
+    r"|produzi|produziu|produzimos"
+    # atualização / modificação
+    r"|atualizei|atualizou|atualizamos"
+    r"|modifiquei|modificou|modificamos"
+    r"|alterei|alterou|alteramos"
+    r"|editei|editou|editamos"
+    r"|refatorei|refatorou|refatoramos"
+    r"|migrei|migrou|migramos"
+    r"|corrigi|corrigiu|corrigimos"
+    r"|reparei|reparou|reparamos"
+    r"|renomeei|renomeou|renomeamos"
+    r"|movi|moveu|movemos"
+    r"|copiei|copiou|copiamos"
+    # exclusão
+    r"|removi|removeu|removemos"
+    r"|delet[ei]|deletou|deletamos"
+    r"|apaguei|apagou|apagamos"
+    r"|exclu[ií]|excluiu|excluimos"
+    # instalação / configuração / execução
+    r"|instalei|instalou|instalamos"
+    r"|configurei|configurou|configuramos"
+    r"|execut[ei]|executou|executamos"
+    r"|rod[ei]|rodou|rodamos"
+    r"|compilei|compilou|compilamos"
+    r"|testei|testou|testamos"
+    r"|implantei|implantou|implantamos"
+    r"|deployei|deployou|deployamos"
+)
+
+# EN: explicit past-tense mutation verbs.  Base forms (create, update, etc.)
+# are intentionally excluded to avoid false positives with "we need to create".
+_PHANTOM_EN_VERBS = (
+    r"created|updated|deleted|removed|installed|configured"
+    r"|fixed|refactored|migrated|renamed|moved|copied"
+    r"|edited|modified|compiled|tested|deployed|executed"
+    r"|cleared|set\s+up|put\s+together|written"
+)
+
+_PHANTOM_ACTION_PATTERNS: list[re.Pattern[str]] = [
+    # PT-BR – "Criei o arquivo", "Pronto, já atualizei"
+    re.compile(rf"\b({_PHANTOM_PT_VERBS})\b", re.IGNORECASE),
+    # PT-BR – passive: "O arquivo foi criado", "A config foi atualizada"
+    re.compile(
+        r"\b[oa]\s+(arquivo|código|modulo|módulo|config|configuração"
+        r"|script|função|classe|serviço|servico|endpoint|rota"
+        r"|variável|dependência|dependencia|pacote|package|ambiente)"
+        r"\s+(foi\s+)?(criad|atualiz|modific|alterad|editad|deletad"
+        r"|removid|instalad|configurad|migrad|corrigid"
+        r"|refatorad|renomead|movid|copiad|excluid|apagad)",
+        re.IGNORECASE,
+    ),
+    # EN – "I created the file", "I've updated the config"
+    re.compile(
+        r"\bI\s+(" + _PHANTOM_EN_VERBS + r")\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bI('ve|\s+have|\s+'s)\s+(" + _PHANTOM_EN_VERBS + r")\b",
+        re.IGNORECASE,
+    ),
+    # EN – passive: "The file has been created", "The config was updated"
+    re.compile(
+        r"\b(the|a|an)\s+(file|code|module|config|configuration"
+        r"|script|function|class|service|endpoint|route"
+        r"|variable|dependency|package|environment)"
+        r"\s+(has\s+been|was|were)\s+"
+        r"(created|updated|deleted|removed|installed|configured"
+        r"|fixed|refactored|migrated|renamed|moved|copied"
+        r"|edited|modified|compiled|tested|deployed|executed"
+        r"|cleared|set\s+up)",
+        re.IGNORECASE,
+    ),
+]
+
+# Negation before a mutation verb → legitimate negative answer, NOT phantom.
+_PHANTOM_NEGATION_RE = re.compile(
+    r"\b(não|nao|no|not|never|didn'?t|doesn'?t|hasn'?t|haven'?t" r"|nunca|jamais)\b",
+    re.IGNORECASE,
+)
+
+# Questions are not phantom actions – the model is asking the user.
+_PHANTOM_QUESTION_RE = re.compile(
+    r"\?\s*$",
+    re.MULTILINE,
+)
+
+# Code blocks / structured data → legitimate answer.
+_PHANTOM_CODE_RE = re.compile(
+    r"(?:^|\n)\s*```",
+    re.DOTALL,
+)
+
 # Indecision / stalling filler that adds no value.
 # NOTE: "ok"/"okay" are intentionally excluded because they can be legitimate
 # short answers (e.g. acknowledging a question).
@@ -175,11 +280,12 @@ def classify_response_intent(text: str) -> str:
     """Classify an LLM response that was *not* a tool call.
 
     Returns one of:
-    - ``"thinking"``  – describes what it will do without acting
-    - ``"planning"``  – describes a plan/approach without acting
-    - ``"tool_hint"`` – mentions a tool name in prose (not JSON)
-    - ``"stalling"``  – filler / indecision with no substance
-    - ``"answer"``    – legitimate final answer
+    - ``"thinking"``       – describes what it will do without acting
+    - ``"planning"``       – describes a plan/approach without acting
+    - ``"tool_hint"``      – mentions a tool name in prose (not JSON)
+    - ``"phantom_action"`` – claims to have done something without calling a tool
+    - ``"stalling"``       – filler / indecision with no substance
+    - ``"answer"``         – legitimate final answer
     """
     stripped = text.strip()
 
@@ -211,6 +317,19 @@ def classify_response_intent(text: str) -> str:
     for pat in _STALLING_PATTERNS:
         if pat.fullmatch(stripped):
             return "stalling"
+
+    # Phantom action – the model claims to have done something without calling
+    # a tool.  Protected by negation and question checks so that legitimate
+    # negative answers and follow-up questions are not flagged.
+    if not _PHANTOM_NEGATION_RE.search(stripped) and not _PHANTOM_QUESTION_RE.search(
+        stripped
+    ):
+        if _PHANTOM_CODE_RE.search(stripped):
+            pass  # code blocks are real answers
+        else:
+            for pat in _PHANTOM_ACTION_PATTERNS:
+                if pat.search(stripped):
+                    return "phantom_action"
 
     # Thinking – the model described an action without executing it.
     for pat in _THINKING_PATTERNS:
@@ -259,6 +378,11 @@ def should_reprompt(text: str) -> tuple[bool, str | None]:
         "tool_hint": (
             "You mentioned a tool in prose instead of calling it properly. "
             "Emit a valid JSON tool-call block now."
+        ),
+        "phantom_action": (
+            "You claimed to have done something but no tool was actually "
+            "called. Do NOT claim to have completed a mutation – actually "
+            "call the tool now by emitting the JSON block."
         ),
         "stalling": (
             "Your response was empty or contained only filler. "
