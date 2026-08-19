@@ -5,6 +5,7 @@ from typing import Any
 
 from src.memory import Memory
 from src.providers.base import BaseProvider
+from src.response_validator import should_reprompt
 from src.tools import registry as tool_registry
 from src.tools.registry import ToolRegistry
 from src.utils import (
@@ -49,6 +50,11 @@ class Agent:
         self.instructions = instructions
         self._pending_call: dict[str, Any] | None = None
 
+    # Maximum consecutive re-prompts before giving up and returning the raw
+    # response (prevents burning through the iteration budget on a model that
+    # repeatedly produces "thinking" text instead of tool calls).
+    _MAX_REPROMPTS = 3
+
     def run(
         self,
         user_prompt: str,
@@ -60,6 +66,7 @@ class Agent:
         current_prompt = user_prompt
         result: dict[str, Any] = {}
         self.memory.add_user(user_prompt)
+        reprompt_count = 0
 
         if self._pending_call is not None:
             verdict = classify_followup(user_prompt)
@@ -82,6 +89,18 @@ class Agent:
 
             call = parse_tool_call(response)
             if call is None:
+                reprompt, reason = should_reprompt(response)
+                if reprompt and reprompt_count < self._MAX_REPROMPTS:
+                    reprompt_count += 1
+                    current_prompt = (
+                        f"Your last reply was not actionable:\n"
+                        f'"{response[:300]}"\n\n'
+                        f"{reason}\n\n"
+                        "Call the tool now with a valid JSON block, "
+                        "or give your final answer."
+                    )
+                    self.memory.add_assistant(response)
+                    continue
                 self.memory.add_assistant(response)
                 return response
 
@@ -92,6 +111,7 @@ class Agent:
             )
             self.memory.add_tool(call["tool"], call["action"], call["params"], result)
             self.memory.add_assistant(response)
+            reprompt_count = 0
 
             if result.get("status") == "awaiting_confirmation":
                 self._pending_call = {
