@@ -166,6 +166,44 @@ class Discovery:
             }
         return list(seen.values())
 
+    def _workspace_looks_empty(self) -> bool:
+        """True when the workspace holds no visible project entries (only
+        dotfiles/dot-directories like .git/.venv count as empty)."""
+        try:
+            entries = list(Path(self.root).iterdir())
+        except OSError:
+            return True
+        return not any(
+            not entry.name.startswith(".") for entry in entries
+        )
+
+    def _greenfield_evidence(
+        self, request: str, terms: list[str]
+    ) -> dict[str, Any]:
+        """Evidence for an empty workspace: there is nothing to find, so the
+        planner must create the whole project from scratch."""
+        root = Path(self.root).resolve()
+        return {
+            "status": "ok",
+            "request": request,
+            "terms": terms,
+            "reason": (
+                "workspace is empty (no project files yet); greenfield mode: "
+                "plan must CREATE the full project structure with write_file"
+            ),
+            "greenfield": True,
+            "count": 1,
+            "candidates": [
+                {
+                    "name": root.name or "workspace",
+                    "path": str(root),
+                    "type": "workspace_root",
+                    "new_project": True,
+                    "snippet": "",
+                }
+            ],
+        }
+
     def discover(
         self,
         request: str,
@@ -220,6 +258,8 @@ class Discovery:
                     }
 
         if not candidates:
+            if self._workspace_looks_empty():
+                return self._greenfield_evidence(request, terms)
             path_like = []
             for term in terms:
                 if "/" in term or "\\" in term or "." in term:

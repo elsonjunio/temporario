@@ -133,5 +133,30 @@ class UndoLog:
         self._entries.clear()
         return count
 
+    def checkpoint(self) -> int:
+        """Current entry count — a mark usable with :meth:`rollback_to`."""
+        return len(self._entries)
+
+    def rollback_to(self, mark: int) -> dict:
+        """Roll back and drop only the entries appended after ``mark``
+        (typically from :meth:`checkpoint`). Entries before ``mark`` — e.g.
+        mutations of previously completed parts — stay intact."""
+        mark = max(0, min(mark, len(self._entries)))
+        tail = self._entries[mark:]
+        del self._entries[mark:]
+        restored = 0
+        errors: list[str] = []
+        for entry in reversed(tail):
+            try:
+                self._restore(entry)
+                restored += 1
+            except OSError as exc:
+                errors.append(f"{entry['tool']} {entry.get('action', '')}: {exc}")
+        return {
+            "status": "rolled_back",
+            "restored": restored,
+            "errors": errors,
+        }
+
     def pending(self) -> int:
         return len(self._entries)

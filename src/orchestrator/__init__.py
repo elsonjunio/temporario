@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from src.memory import Memory
 from src.orchestrator.orchestrator import MANUAL, Orchestrator
+from src.orchestrator.patchgen import PatchGenerator
 from src.tools.base import ToolSpec
 from src.tools.registry import ToolRegistry
 
@@ -19,12 +20,19 @@ def create_orchestrator_tool(
     root: str = ".",
     name: str = "orchestrator",
     discovery_fallback: Callable[..., dict[str, Any]] | None = None,
+    split_threshold: int | None = None,
+    max_parts: int | None = None,
 ) -> ToolSpec:
     """Build the special orchestrator tool bound to a registry and provider.
 
     Registered via ``ToolRegistry.register(name, spec)``. If it is never
     registered (or unregistered later), the agent keeps working with the base
     tools — low coupling by design.
+
+    ``memory`` is accepted for signature compatibility but IGNORED: the
+    orchestrator keeps its own independent, compressor-free memory, so nothing
+    it records reaches the agent's conversation or triggers context
+    compression mid-run.
 
     ``discovery_fallback`` is an optional callable(request, terms, paths) that
     returns a discovery evidence dict. It is invoked automatically when the
@@ -41,6 +49,8 @@ def create_orchestrator_tool(
         exec_retries=exec_retries,
         root=root,
         discovery_fallback=discovery_fallback,
+        split_threshold=split_threshold,
+        max_parts=max_parts,
     )
     return ToolSpec(
         name=name,
@@ -59,4 +69,4 @@ def create_orchestrator_tool(
     )
 
 
-__all__ = ["create_orchestrator_tool", "Orchestrator", "MANUAL"]
+__all__ = ["create_orchestrator_tool", "Orchestrator", "MANUAL", "PatchGenerator"]

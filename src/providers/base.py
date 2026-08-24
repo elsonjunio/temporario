@@ -12,6 +12,50 @@ class ProviderError(RuntimeError):
     pass
 
 
+class TransientProviderError(ProviderError):
+    """Provider failure that is worth retrying (throttling, 5xx blips).
+
+    Raised for transient HTTP statuses so callers can distinguish "give up"
+    errors from ones a bounded retry can ride out. Carries the HTTP status
+    and the server's ``Retry-After`` hint when present.
+    """
+
+    def __init__(
+        self, status: int, detail: str = "", retry_after: float | None = None
+    ) -> None:
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
+        self.retry_after = retry_after
+
+
+#: Upper bound for honoring a server ``Retry-After`` hint, so a huge value
+#: cannot stall the agent for hours.
+_MAX_RETRY_AFTER = 300.0
+
+
+def _retry_after(headers: Any) -> float | None:
+    """Parse the ``Retry-After`` header (seconds or HTTP-date) if present."""
+    try:
+        raw = headers.get("Retry-After")
+    except AttributeError:
+        return None
+    if not raw:
+        return None
+    try:
+        return min(float(raw), _MAX_RETRY_AFTER)
+    except (TypeError, ValueError):
+        return None
+
+
+def _transient_delay(error: Exception | None, attempt: int, backoff: float) -> float:
+    """Sleep before retry ``attempt`` (1-based): honor Retry-After when the
+    previous failure carried one, otherwise back off linearly."""
+    if isinstance(error, TransientProviderError) and error.retry_after:
+        return min(error.retry_after, _MAX_RETRY_AFTER)
+    return backoff * attempt
+
+
 class BaseProvider:
     """Base for OpenAI-compatible chat completion providers.
 
@@ -39,6 +83,11 @@ class BaseProvider:
     default_timeout = 60
     #: Attempts on transient network errors (timeouts/URLError).
     attempts = 1
+    #: HTTP statuses treated as transient (retried within ``attempts``).
+    retry_statuses = frozenset({429, 500, 502, 503, 504})
+    #: Base sleep (seconds) between transient-status retries; grows per attempt
+    #: unless the server sends ``Retry-After``.
+    retry_backoff = 5.0
     #: Whether an API key is mandatory.
     require_api_key = True
 
@@ -130,20 +179,22 @@ class BaseProvider:
             method="POST",
         )
 
-        try:
-            return self._send(request)
-        except (TimeoutError, urllib.error.URLError) as exc:
-            last_error = exc
-            for attempt in range(self.attempts - 1):
-                time.sleep(2 * (attempt + 1))
-                try:
-                    return self._send(request)
-                except (TimeoutError, urllib.error.URLError) as retry_exc:
-                    last_error = retry_exc
-            raise ProviderError(
-                f"{self.label} request failed after {self.attempts} attempts: "
-                f"{last_error}"
-            ) from last_error
+        last_error: Exception | None = None
+        for attempt in range(self.attempts):
+            if attempt:
+                time.sleep(_transient_delay(last_error, attempt, self.retry_backoff))
+            try:
+                return self._send(request)
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                TransientProviderError,
+            ) as exc:
+                last_error = exc
+        raise ProviderError(
+            f"{self.label} request failed after {self.attempts} attempts: "
+            f"{last_error}"
+        ) from last_error
 
     def _send(self, request: urllib.request.Request) -> dict[str, Any]:
         try:
@@ -151,6 +202,10 @@ class BaseProvider:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code in self.retry_statuses:
+                raise TransientProviderError(
+                    exc.code, detail, _retry_after(exc.headers)
+                ) from exc
             raise ProviderError(f"{self.label} HTTP {exc.code}: {detail}") from exc
 
     def _log_chat(

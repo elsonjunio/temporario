@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 from src.memory import Memory
-from src.providers.base import BaseProvider
+from src.providers.base import BaseProvider, TransientProviderError
 from src.response_validator import should_reprompt
 from src.tools import registry as tool_registry
 from src.tools.registry import ToolRegistry
@@ -55,6 +56,37 @@ class Agent:
     # repeatedly produces "thinking" text instead of tool calls).
     _MAX_REPROMPTS = 3
 
+    # Bounded retries when the provider fails transiently mid-run (throttling
+    # / 5xx blips): one blip must not kill a long orchestration.
+    _MAX_PROVIDER_RETRIES = 4
+    _PROVIDER_RETRY_BASE = 20.0
+
+    def _infer_with_retry(
+        self, current_prompt: str, config: str, **settings: Any
+    ) -> str:
+        """``provider.infer`` with bounded backoff on transient errors.
+
+        Non-transient ``ProviderError``\\ s propagate immediately; transient
+        ones (HTTP 429/5xx, timeouts) are retried up to ``_MAX_PROVIDER_RETRIES``
+        with linear backoff before giving up.
+        """
+        for attempt in range(self._MAX_PROVIDER_RETRIES + 1):
+            try:
+                return self.provider.infer(current_prompt, config, **settings)
+            except TransientProviderError as exc:
+                if attempt >= self._MAX_PROVIDER_RETRIES:
+                    raise
+                delay = min(exc.retry_after or 0.0, 300.0) or (
+                    self._PROVIDER_RETRY_BASE * (attempt + 1)
+                )
+                print(
+                    f"[agent] provider transient error ({exc}); retry "
+                    f"{attempt + 1}/{self._MAX_PROVIDER_RETRIES} in {delay:.0f}s",
+                    flush=True,
+                )
+                time.sleep(delay)
+        raise RuntimeError("unreachable")  # pragma: no cover
+
     def run(
         self,
         user_prompt: str,
@@ -85,7 +117,7 @@ class Agent:
                 environment=self.environment,
                 instructions=self.instructions,
             )
-            response = self.provider.infer(current_prompt, config, **settings)
+            response = self._infer_with_retry(current_prompt, config, **settings)
 
             call = parse_tool_call(response)
             if call is None:

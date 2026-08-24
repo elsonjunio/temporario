@@ -19,7 +19,6 @@ from src.tools.registry import build_default_registry
 from src.ui import ChatUI
 from src.utils import AGENT_MODES, DEFAULT_MODE, build_environment_info
 
-
 def build_provider():
     """Instantiate the provider named by ``AGENT_PROVIDER`` (from ``.env``).
 
@@ -63,6 +62,8 @@ def main() -> None:
         verbose=os.getenv("EXECUTOR_VERBOSE") == "1",
     )
     apply_mode(registry, DEFAULT_MODE, specs)
+
+
 
     agent = Agent(
         provider=provider,

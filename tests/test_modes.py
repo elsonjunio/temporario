@@ -36,12 +36,10 @@ class TestApplyMode(unittest.TestCase):
         self.registry = build_default_registry()
         self.specs = _fake_specs()
 
-    def test_no_subagents_registered(self):
-        for mode in MODE_NAMES:
-            apply_mode(self.registry, mode, self.specs)
-            tools = self.registry.list_tools()
-            for sub in ("orchestrator", "discovery", "planner", "executor"):
-                self.assertNotIn(sub, tools)
+    def test_orchestrator_in_fast_and_balanced_only(self):
+        for mode in ("fast", "balanced"):
+            tools = apply_mode(self.registry, mode, self.specs)
+            self.assertIn("orchestrator", tools)
             self.assertIn("browser", tools)
             for base in (
                 "read_file",
@@ -50,18 +48,33 @@ class TestApplyMode(unittest.TestCase):
                 "search_files",
             ):
                 self.assertIn(base, tools)
+            for sub in ("discovery", "planner", "executor"):
+                self.assertNotIn(sub, tools)
+
+    def test_precision_has_no_subagents(self):
+        tools = apply_mode(self.registry, "precision", self.specs)
+        self.assertNotIn("orchestrator", tools)
+        self.assertIn("browser", tools)
+        for base in (
+            "read_file",
+            "run_command",
+            "write_file",
+            "search_files",
+        ):
+            self.assertIn(base, tools)
 
     def test_switching_modes_is_idempotent(self):
         apply_mode(self.registry, "fast", self.specs)
         apply_mode(self.registry, "fast", self.specs)
-        tools = self.registry.list_tools()
-        self.assertNotIn("orchestrator", tools)
-        self.assertNotIn("discovery", tools)
+        self.assertIn("orchestrator", self.registry.list_tools())
         apply_mode(self.registry, "precision", self.specs)
         apply_mode(self.registry, "precision", self.specs)
         tools = self.registry.list_tools()
         self.assertNotIn("planner", tools)
         self.assertNotIn("orchestrator", tools)
+        # back to a subagent mode re-registers it
+        apply_mode(self.registry, "balanced", self.specs)
+        self.assertIn("orchestrator", self.registry.list_tools())
 
     def test_base_tools_always_present(self):
         apply_mode(self.registry, "precision", self.specs)
@@ -71,6 +84,33 @@ class TestApplyMode(unittest.TestCase):
     def test_mode_tables_are_coherent(self):
         self.assertEqual(MODE_NAMES, ("fast", "balanced", "precision"))
         self.assertEqual(set(MODE_DESCRIPTIONS), set(MODE_NAMES))
+
+
+class TestBuildAgentSpecs(unittest.TestCase):
+    def test_specs_include_working_orchestrator(self):
+        from src.modes import build_agent_specs
+
+        registry = build_default_registry()
+
+        class FakeProvider:
+            model = "fake"
+
+            def infer(self, prompt, config=None):  # pragma: no cover
+                return "ok"
+
+        specs = build_agent_specs(
+            registry,
+            FakeProvider(),
+            None,
+            root=".",
+        )
+        self.assertIn("navigation", specs)
+        self.assertIn("orchestrator", specs)
+        orch = specs["orchestrator"]
+        self.assertEqual(orch.name, "orchestrator")
+        apply_mode(registry, "fast", specs)
+        result = registry.dispatch("orchestrator", "pending")
+        self.assertEqual(result["status"], "no_pending_plan")
 
 
 class TestReportCandidates(unittest.TestCase):

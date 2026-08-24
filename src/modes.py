@@ -5,35 +5,42 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.navigation import create_navigation_tool
+from src.orchestrator import create_orchestrator_tool
+from src.patcher import create_patcher_tool
 from src.tools.registry import ToolRegistry
 from src.utils import AGENT_MODES
 
 MODE_NAMES = ("fast", "balanced", "precision")
 
-#: Subagents are disabled - kept empty for compatibility with apply_mode.
-SUBAGENT_NAMES: tuple[str, ...] = ()
+#: Subagents that may exist in ``specs``; unregistered on every mode switch
+#: so switching is idempotent and precision never keeps stale entries.
+SUBAGENT_NAMES: tuple[str, ...] = ("orchestrator", "patcher")
 
 #: Tools registered per execution mode (beyond the base tools + navigation).
-#: Subagents (orchestrator/planner/discovery/executor) are not registered, so
-#: every mode uses only the base toolset.
+#: fast/balanced drive changes through the orchestrator tool (discovery →
+#: plan → confirm → execute with snapshots/undo); precision uses only the
+#: base toolset plus the patcher (validated patch generation without the
+#: orchestrator confirmation layer).
 MODE_TOOLS: dict[str, tuple[str, ...]] = {
-    "fast": (),
-    "balanced": (),
-    "precision": (),
+    "fast": ("orchestrator", "patcher"),
+    "balanced": ("orchestrator", "patcher"),
+    "precision": ("patcher",),
 }
 
 MODE_DESCRIPTIONS: dict[str, str] = {
     "fast": (
-        "apenas ferramentas base + navigation; sem subagents de "
-        "orquestração/descoberta/planejamento."
+        "ferramentas base + navigation + orchestrator (planos confirmados "
+        "com snapshot/undo automático) + patcher (payloads de patch "
+        "validados); sem discovery/planner subagents."
     ),
     "balanced": (
-        "apenas ferramentas base + navigation; sem subagents de "
-        "orquestração/descoberta/planejamento."
+        "ferramentas base + navigation + orchestrator (planos confirmados "
+        "com snapshot/undo automático) + patcher (payloads de patch "
+        "validados); sem discovery/planner subagents."
     ),
     "precision": (
-        "apenas ferramentas base + navigation; sem subagents de "
-        "orquestração/descoberta/planejamento."
+        "apenas ferramentas base + navigation + patcher (gera e valida "
+        "patches sem aplicar); sem orchestrator/discovery/planner."
     ),
 }
 
@@ -185,12 +192,22 @@ def build_agent_specs(
 ) -> dict[str, Any]:
     """Build the special tool specs once (none registered yet).
 
-    The orchestrator always gets the discovery fallback closure; it no-ops in
-    fast mode (subagent not registered) and the orchestrator is not registered
-    at all in precision mode.
+    The orchestrator is built for every entry point and registered by
+    fast/balanced modes (``MODE_TOOLS``); precision leaves it out. It always
+    gets the discovery fallback closure, which no-ops while the discovery
+    subagent is not registered.
     """
     specs: dict[str, Any] = {
         "navigation": create_navigation_tool(provider),
+        "orchestrator": create_orchestrator_tool(
+            registry,
+            provider,
+            memory,
+            root=root,
+            max_plan_steps=max_plan_steps,
+            discovery_fallback=make_discovery_fallback(registry, root),
+        ),
+        "patcher": create_patcher_tool(provider, root=root),
     }
     return specs
 

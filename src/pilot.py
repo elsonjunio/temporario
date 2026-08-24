@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -256,6 +257,9 @@ def run_phase(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_dotenv()
+    # Pilot drives the orchestrator programmatically (run -> execute
+    # confirm=True); never let the interactive confirmation prompt take over.
+    os.environ.setdefault("ORCH_CONFIRM_MODE", "agent")
     root = str(Path(args.root).resolve())
     phases = load_phases(args.phases)
 

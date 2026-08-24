@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from src.tools.registry import ToolRegistry
@@ -10,6 +11,10 @@ PLANNING_SYSTEM = (
     "You are a planning engine for a filesystem agent. You only produce JSON "
     "plans that use the provided tools; you never execute anything."
 )
+
+#: Pause between attempts when the provider itself fails (transient 5xx /
+#: network errors), so one flaky response does not abort the whole flow.
+_PROVIDER_RETRY_SLEEP = 4
 
 
 class Planner:
@@ -70,6 +75,9 @@ class Planner:
             "exact paths from that listing; never invent a filename.\n"
             "Rules:\n"
             "- Use only the available tools listed above.\n"
+            "- Every step must be ATOMIC and self-contained: its params fully "
+            "describe the change on their own and must never rely on results "
+            "(or memory) from earlier steps.\n"
             "- Use concrete file paths from the discovery evidence.\n"
             "- If the workspace has a docs/SPEC.md (or docs/PLAYBOOK.md), add a "
             "read_file step for it first and follow its contract for the files "
@@ -126,15 +134,30 @@ class Planner:
             "patch_file (replace or apply). Use write_file ONLY to create NEW "
             "files (change_mode 'new'), or for an intentional full rewrite in "
             'which case set "rewrite": true on the step.\n'
-            "- patch_file 'replace' requires the old text copied VERBATIM from "
-            "the file content (add a read_file step for the target first). When "
-            "most of the file body changes, or you are unsure of the exact old "
-            "anchor, prefer write_file with rewrite:true and the full new "
-            "content instead of a fragile patch.\n"
+            "- patch_file steps must NOT fabricate anchors: set params to "
+            '{"file_path": <path>, "instruction": "<precise description of '
+            'the change>"} (+ optional "replace_all": true) and let the '
+            "runtime patch generator produce old/new from the CURRENT file "
+            "content. The instruction must name the exact symbols/lines to "
+            "change and what the new content should be, so a minimal unique "
+            "anchor can be derived. NEVER invent 'old', 'new' or 'diff' "
+            "values; never add read_file steps just to copy patch anchors "
+            "(read_file is only for deriving names/values you need elsewhere, "
+            "e.g. inside write_file content).\n"
             "- GREENFIELD: targets seeded with type 'new_file' do not exist yet "
             "and must be created with write_file using the exact path from the "
             "evidence. Create parent directories implicitly via write_file "
             "(create_dirs defaults to true); there is no separate mkdir tool.\n"
+            '- GREENFIELD WORKSPACE (evidence has "greenfield": true and a '
+            "'workspace_root' candidate): the workspace is EMPTY, so there are "
+            "no existing files to read or patch — every step must create new "
+            "files with write_file at exact relative-ish paths under the "
+            "workspace root (backend/, frontend/, ...). Decompose the whole "
+            "project into concrete, COMPLETE file contents (real working code, "
+            "never placeholders). Prefer writing files directly over scaffolding "
+            "commands; only use run_command for dependency installation/builds "
+            "(pip install, npm install) with cwd=<workspace root> and a generous "
+            "timeout (600+).\n"
             "- run_command steps that scaffold or install (pip install, npm "
             "install, ng new, git init) must set cwd to the project root and a "
             "generous timeout (600+) so they do not time out; set "
@@ -200,7 +223,18 @@ class Planner:
         attempts = 0
         while True:
             attempts += 1
-            raw = self.provider.infer(prompt, PLANNING_SYSTEM)
+            try:
+                raw = self.provider.infer(prompt, PLANNING_SYSTEM)
+            except Exception as exc:
+                # Provider/network failure (transient 5xx, timeouts...):
+                # retry instead of aborting the whole orchestrator run.
+                if attempts < self.max_plan_retries + 1:
+                    time.sleep(_PROVIDER_RETRY_SLEEP * attempts)
+                    continue
+                return {
+                    "status": "error",
+                    "message": f"provider failed after {attempts} attempts: {exc}",
+                }
 
             data = extract_json_object(raw)
             if isinstance(data, dict) and "steps" in data:

@@ -21,8 +21,7 @@ _BASE_INSTRUCTIONS = (
     "tool calls until you can answer, then reply without a JSON block.\n"
 )
 
-#: Execution modes: every mode uses the base toolset (+ navigation) directly.
-#: Subagents (orchestrator/planner/discovery/executor) are disabled, so the
+#: Precision mode: only the base toolset (+ navigation) is available, so the
 #: routing text instructs the model to investigate and edit with the base
 #: tools itself - there is no separate planning/confirmation layer.
 _BASE_MODE_TEXT = (
@@ -38,7 +37,11 @@ _BASE_MODE_TEXT = (
     "configure, or any request that asks to evaluate the cause AND "
     "correct/fix something): investigate first (read/list/search/grep the "
     "relevant files) and then edit directly with write_file/patch_file/"
-    "run_command. Work in a loop - issue tool calls until the task is done, "
+    "run_command. For surgical edits to EXISTING text files you may delegate "
+    "the payload construction to the 'patcher' tool (action 'run', passing "
+    "'instruction' and optional 'paths'): it returns validated params which "
+    "you apply yourself with patch_file. "
+    "Work in a loop - issue tool calls until the task is done, "
     "then reply without a JSON block.\n"
     "- WEB NAVIGATION: when the user asks to browse or interact with a "
     "website, use the 'navigation' tool.\n"
@@ -48,9 +51,39 @@ _BASE_MODE_TEXT = (
     "automatic rollback), so be careful with destructive operations.\n"
 )
 
+#: fast/balanced modes: changes go through the orchestrator tool, which
+#: investigates, plans, asks for confirmation and executes with automatic
+#: snapshots (undo on failure). Lookups/questions stay direct.
+_ORCH_MODE_TEXT = (
+    "Route the request before acting:\n"
+    "- SIMPLE LOOKUPS (does a file exist, find a term, read a snippet, list a "
+    "directory): call search_files/grep_files/read_file/list_dir directly.\n"
+    "- QUESTION / ANALYSIS (understand, evaluate, assess, how something "
+    'works, "why it breaks"): investigate read-only with the base tools '
+    "(read_file, list_dir, search_files, grep_files) and answer directly. "
+    "Never call the orchestrator for a question - an evaluation never "
+    "changes files.\n"
+    "- OPERATION / CHANGE (create, edit, fix, migrate, refactor, install, "
+    "configure, or any request that asks to evaluate the cause AND "
+    "correct/fix something): delegate it to the 'orchestrator' tool with the "
+    "'run' action, passing the user request verbatim in 'request'. The "
+    "orchestrator investigates, plans step by step and returns either a plan "
+    "preview ('awaiting_confirmation' - relay the plan to the user and wait; "
+    "when they approve, answer 'execute' action with confirm=true) or an "
+    "execution report. Do NOT investigate or edit files yourself for these "
+    "requests; if the orchestrator is unavailable (error/no pending plan), "
+    "fall back to the 'patcher' tool (action 'run' with 'instruction' and "
+    "optional 'paths') to build validated patch payloads and apply them with "
+    "patch_file, or to the base tools.\n"
+    "- WEB NAVIGATION: when the user asks to browse or interact with a "
+    "website, use the 'navigation' tool.\n"
+    "Planner/discovery/executor subagents are not registered; the "
+    "orchestrator handles planning internally.\n"
+)
+
 AGENT_MODES: dict[str, str] = {
-    "fast": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
-    "balanced": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
+    "fast": _BASE_INSTRUCTIONS + _ORCH_MODE_TEXT,
+    "balanced": _BASE_INSTRUCTIONS + _ORCH_MODE_TEXT,
     "precision": _BASE_INSTRUCTIONS + _BASE_MODE_TEXT,
 }
 

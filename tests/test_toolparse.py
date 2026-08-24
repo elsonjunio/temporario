@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.utils import is_tool_attempt, parse_tool_call
+from src.utils import extract_json_object, is_tool_attempt, parse_tool_call
 
 
 class TestParseToolCallTolerant(unittest.TestCase):
@@ -223,6 +223,38 @@ class TestIsToolAttempt(unittest.TestCase):
 
     def test_plain_answer_is_not_attempt(self):
         self.assertFalse(is_tool_attempt("tudo pronto, sem chamadas."))
+
+
+class TestExtractJsonObject(unittest.TestCase):
+    def test_plain_object(self):
+        self.assertEqual(extract_json_object('{"a": 1}'), {"a": 1})
+
+    def test_object_inside_prose(self):
+        self.assertEqual(extract_json_object('noise {"a": 1} tail'), {"a": 1})
+
+    def test_single_quotes_and_trailing_comma(self):
+        self.assertEqual(extract_json_object("{'a': [1, 2,],}"), {"a": [1, 2]})
+
+    def test_truncated_between_steps_is_salvaged(self):
+        raw = (
+            '{"steps": ['
+            '{"tool": "write_file", "action": "write", "params": '
+            '{"file_path": "a.txt", "content": "x"}},'
+            '{"tool": "run_command", "action": "run", "params": '
+            '{"command": "ls"'
+        )
+        data = extract_json_object(raw)
+        self.assertIsInstance(data, dict)
+        self.assertEqual(len(data["steps"]), 2)
+
+    def test_truncated_string_value_still_fails_cleanly(self):
+        # A cut inside an unterminated string cannot be repaired safely.
+        self.assertIsNone(
+            extract_json_object('{"steps": [{"tool": "write_file", "content": "unfi')
+        )
+
+    def test_no_json_returns_none(self):
+        self.assertIsNone(extract_json_object("just prose, nothing else"))
 
 
 if __name__ == "__main__":

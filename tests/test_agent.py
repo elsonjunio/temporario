@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from src.agent import Agent
 from src.memory import Memory
@@ -291,6 +292,57 @@ class TestConfirmationFlow(unittest.TestCase):
         self.assertIn(
             "Quick lookup only. Continue with discovery run.", provider.calls[1][0]
         )
+
+
+class FlakyProvider:
+    """Raises transient errors before finally serving a canned response."""
+
+    def __init__(self, failures, response):
+        self.failures = list(failures)
+        self.response = response
+        self.calls = 0
+
+    def infer(self, user_prompt, config, **settings):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return self.response
+
+
+class TestProviderTransientRetry(unittest.TestCase):
+    def test_transient_error_is_retried_until_success(self):
+        from src.providers.base import TransientProviderError
+
+        provider = FlakyProvider(
+            [TransientProviderError(429, "rate limited", retry_after=0)],
+            "final answer",
+        )
+        agent = Agent(provider=provider, registry=build_default_registry())
+        with mock.patch("src.agent.time.sleep") as sleep:
+            result = agent.run("pergunta")
+        self.assertEqual(result, "final answer")
+        self.assertEqual(provider.calls, 2)
+        sleep.assert_called()
+
+    def test_non_transient_provider_error_propagates(self):
+        from src.providers.base import ProviderError
+
+        provider = FlakyProvider([ProviderError("HTTP 401: nope")], "")
+        agent = Agent(provider=provider, registry=build_default_registry())
+        with mock.patch("src.agent.time.sleep") as sleep:
+            with self.assertRaises(ProviderError):
+                agent.run("pergunta")
+        sleep.assert_not_called()
+
+    def test_exhausted_transient_retries_raise(self):
+        from src.providers.base import TransientProviderError
+
+        provider = FlakyProvider([TransientProviderError(500)] * 10, "")
+        agent = Agent(provider=provider, registry=build_default_registry())
+        with mock.patch("src.agent.time.sleep"):
+            with self.assertRaises(TransientProviderError):
+                agent.run("pergunta")
+        self.assertEqual(provider.calls, agent._MAX_PROVIDER_RETRIES + 1)
 
 
 if __name__ == "__main__":

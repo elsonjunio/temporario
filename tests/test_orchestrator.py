@@ -1,11 +1,15 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.orchestrator import create_orchestrator_tool
 from src.orchestrator.discovery import Discovery
 from src.orchestrator.orchestrator import Orchestrator
+from src.orchestrator.patchgen import PatchGenerator
+from src.orchestrator.preassessment import Decomposer, PreAssessor, score_request
 from src.orchestrator.undo import UndoLog
 from src.tools.base import ToolSpec
 from src.tools.registry import build_default_registry
@@ -30,6 +34,14 @@ class OrchestratorTestCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.registry = build_default_registry()
+        # Force the legacy confirmation flow so tests never block on the
+        # interactive input() gate, regardless of whether the suite runs in a
+        # TTY. The interactive-gate tests below opt back in explicitly.
+        self._confirm_mode_patcher = patch.dict(
+            os.environ, {"ORCH_CONFIRM_MODE": "agent"}
+        )
+        self._confirm_mode_patcher.start()
+        self.addCleanup(self._confirm_mode_patcher.stop)
 
     def _make_orch(self, provider):
         return Orchestrator(
@@ -69,9 +81,30 @@ class TestDiscovery(OrchestratorTestCase):
         self.assertTrue(any("notes.txt" in p for p in paths))
 
     def test_poor_when_no_match(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         discovery = Discovery(self.registry, root=str(self.root))
         result = discovery.discover("xyzzy zorp unknown")
         self.assertEqual(result["status"], "poor")
+
+    def test_empty_workspace_returns_greenfield_evidence(self):
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover(
+            "crie uma aplicação web completa com backend e frontend"
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["greenfield"])
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["type"], "workspace_root")
+        self.assertTrue(candidate["new_project"])
+        self.assertEqual(candidate["path"], str(self.root.resolve()))
+
+    def test_dotfiles_only_workspace_counts_as_empty(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".gitignore").write_text("x\n")
+        discovery = Discovery(self.registry, root=str(self.root))
+        result = discovery.discover("build a whole new project")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["greenfield"])
 
 
 class TestDiscoveryFallback(OrchestratorTestCase):
@@ -79,6 +112,7 @@ class TestDiscoveryFallback(OrchestratorTestCase):
     the internal keyword discovery returns weak evidence."""
 
     def test_fallback_used_when_internal_poor(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         new_path = self.root / "generated" / "out.txt"
         calls = []
 
@@ -171,6 +205,7 @@ class TestDiscoveryFallback(OrchestratorTestCase):
         self.assertEqual(calls, [])
 
     def test_fallback_poor_still_aborts(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         calls = []
 
         def fallback(request, terms, paths):
@@ -197,6 +232,7 @@ class TestDiscoveryFallback(OrchestratorTestCase):
         self.assertEqual(len(calls), 1)
 
     def test_discover_uses_fallback_too(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         calls = []
 
         def fallback(request, terms, paths):
@@ -220,6 +256,7 @@ class TestDiscoveryFallback(OrchestratorTestCase):
         self.assertEqual(len(calls), 1)
 
     def test_create_orchestrator_tool_passes_fallback(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         calls = []
 
         def fallback(request, terms, paths):
@@ -896,6 +933,7 @@ class TestOrchestratorTool(OrchestratorTestCase):
         self.assertEqual(orch.name, "orchestrator")
 
     def test_run_aborts_on_poor_discovery(self):
+        (self.root / "decoy.txt").write_text("unrelated\n")
         provider = FakeProvider()
         orch = self._make_tool(provider)
         result = orch.dispatch("run", request="zzz nothing matches this at all")
@@ -1118,6 +1156,720 @@ class TestOrchestratorTool(OrchestratorTestCase):
         self.assertTrue(self.registry.unregister("orchestrator"))
         self.assertNotIn("orchestrator", self.registry.list_tools())
         self.assertIn("write_file", self.registry.list_tools())
+
+
+class TestMemoryIndependence(unittest.TestCase):
+    """The orchestrator never shares the agent's memory: step results stay in
+    an independent, compressor-free instance and are reset per invocation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        os.environ["ORCH_CONFIRM_MODE"] = "agent"
+        self.addCleanup(os.environ.pop, "ORCH_CONFIRM_MODE", None)
+
+    def test_agent_memory_untouched_and_local_memory_used(self):
+        from src.memory import Memory
+
+        target = self.root / "f.txt"
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "write_file",
+                                "action": "write",
+                                "params": {
+                                    "file_path": str(target),
+                                    "content": "x",
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+        agent_memory = Memory()
+        orch = Orchestrator(build_default_registry(), provider, agent_memory)
+        result = orch.run(request="create f.txt", confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(agent_memory), 0)
+        # Local (independent) memory recorded the executed step.
+        self.assertEqual(len(orch.memory), 1)
+        self.assertIsNone(orch.memory.compressor)
+
+    def test_local_memory_reset_between_runs(self):
+        target = self.root / "f.txt"
+        plan = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "write_file",
+                        "action": "write",
+                        "params": {"file_path": str(target), "content": "x"},
+                    }
+                ]
+            }
+        )
+        provider = FakeProvider([plan])
+        orch = Orchestrator(build_default_registry(), provider)
+        first = orch.run(request="create f.txt", confirm=True)
+        second = orch.run(request="create f.txt", confirm=True)
+        self.assertEqual(first["status"], "success")
+        self.assertEqual(second["status"], "success")
+        self.assertEqual(len(orch.memory), 1)
+
+
+class TestInteractiveConfirmation(unittest.TestCase):
+    """With a TTY stdin the orchestrator asks for approval itself via input()
+    and executes or cancels in the SAME call — nothing round-trips through
+    the main agent."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        os.environ.pop("ORCH_CONFIRM_MODE", None)
+        self.addCleanup(os.environ.pop, "ORCH_CONFIRM_MODE", None)
+        # Silence the plan summary the gate prints to stdout.
+        self._stdout_patcher = patch("sys.stdout")
+        self._stdout_patcher.start()
+        self.addCleanup(self._stdout_patcher.stop)
+
+    def _plan(self, target: Path) -> FakeProvider:
+        return FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "tool": "write_file",
+                                "action": "write",
+                                "params": {
+                                    "file_path": str(target),
+                                    "content": "done\n",
+                                },
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+
+    def test_approval_executes_inline(self):
+        target = self.root / "result.txt"
+        orch = Orchestrator(
+            build_default_registry(), self._plan(target), root=str(self.root)
+        )
+        with patch("sys.stdin") as fake_stdin, patch(
+            "builtins.input", return_value="s"
+        ) as fake_input:
+            fake_stdin.isatty.return_value = True
+            result = orch.run(request="create result.txt")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(target.read_text(), "done\n")
+        fake_input.assert_called_once()
+
+    def test_rejection_cancels_and_discards(self):
+        target = self.root / "result.txt"
+        orch = Orchestrator(
+            build_default_registry(), self._plan(target), root=str(self.root)
+        )
+        with patch("sys.stdin") as fake_stdin, patch(
+            "builtins.input", return_value="n"
+        ):
+            fake_stdin.isatty.return_value = True
+            result = orch.run(request="create result.txt")
+        self.assertEqual(result["status"], "cancelled")
+        self.assertFalse(target.exists())
+        # A rejected plan leaves no pending state behind.
+        self.assertEqual(orch.pending()["status"], "no_pending_plan")
+
+    def test_eof_counts_as_rejection(self):
+        target = self.root / "result.txt"
+        orch = Orchestrator(
+            build_default_registry(), self._plan(target), root=str(self.root)
+        )
+        with patch("sys.stdin") as fake_stdin, patch(
+            "builtins.input", side_effect=EOFError
+        ):
+            fake_stdin.isatty.return_value = True
+            result = orch.run(request="create result.txt")
+        self.assertEqual(result["status"], "cancelled")
+        self.assertFalse(target.exists())
+
+    def test_non_tty_falls_back_to_legacy_preview(self):
+        target = self.root / "result.txt"
+        orch = Orchestrator(
+            build_default_registry(), self._plan(target), root=str(self.root)
+        )
+        with patch("sys.stdin") as fake_stdin:
+            fake_stdin.isatty.return_value = False
+            result = orch.run(request="create result.txt")
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertFalse(target.exists())
+
+
+class TestPatchGeneration(unittest.TestCase):
+    """patch_file steps carry an instruction; the concrete payload is
+    generated at execution time from the CURRENT disk content by the
+    dedicated generator (atomic steps, no cross-step anchor copying)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.target = self.root / "f.txt"
+
+    def _orch(self, provider, **kwargs) -> Orchestrator:
+        return Orchestrator(
+            build_default_registry(), provider, root=str(self.root), **kwargs
+        )
+
+    def _instruction_step(self) -> dict:
+        return {
+            "tool": "patch_file",
+            "action": "replace",
+            "params": {
+                "file_path": str(self.target),
+                "instruction": "replace hello with goodbye",
+            },
+            "description": "edit f.txt",
+        }
+
+    def test_instruction_generates_and_applies_patch(self):
+        self.target.write_text("hello world\nsecond line\n")
+        provider = FakeProvider(
+            [
+                json.dumps({"steps": [self._instruction_step()]}),
+                json.dumps({"mode": "replace", "old": "hello", "new": "goodbye"}),
+            ]
+        )
+        orch = self._orch(provider)
+        result = orch.execute([self._instruction_step()], confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(self.target.read_text(), "goodbye world\nsecond line\n")
+        trace_entry = result["trace"][0]
+        self.assertTrue(trace_entry["patch_generated"])
+        # The orchestration-only hint never leaks into the dispatched params.
+        self.assertNotIn("instruction", trace_entry["result"])
+
+    def test_generator_sees_only_instruction_and_content(self):
+        import re
+
+        self.target.write_text("hello world\n")
+        provider = FakeProvider(
+            [json.dumps({"mode": "replace", "old": "hello", "new": "goodbye"})]
+        )
+        generator = PatchGenerator(provider)
+        generated = generator.generate(
+            str(self.target),
+            self.target.read_text(),
+            "replace hello with goodbye",
+        )
+        self.assertEqual(generated["status"], "ok")
+        user_prompt, config = provider.calls[0]
+        # Minimal context: no tool manual, no plan JSON mixed in.
+        self.assertNotIn("Available tools", user_prompt)
+        self.assertNotIn('"steps"', user_prompt)
+        self.assertIn("replace hello with goodbye", user_prompt)
+        self.assertIn("hello world", user_prompt)
+        self.assertIn("VERBATIM", config.upper())
+
+    def test_invalid_anchor_retries_then_fails_with_rollback(self):
+        self.target.write_text("hello world\n")
+        bad = json.dumps({"mode": "replace", "old": "nope", "new": "x"})
+        provider = FakeProvider([bad, bad])
+        orch = self._orch(provider)
+        result = orch.execute([self._instruction_step()], confirm=True)
+        self.assertEqual(result["status"], "failed")
+        # Two generation attempts (initial + one retry).
+        self.assertEqual(len(provider.calls), 2)
+        self.assertIn("not found", result["trace"][0]["result"]["error"]["message"])
+        self.assertEqual(self.target.read_text(), "hello world\n")
+
+    def test_generation_failure_message_included_in_trace(self):
+        self.target.write_text("hello world\n")
+        provider = FakeProvider(
+            [
+                json.dumps({"steps": [self._instruction_step()]}),
+                "not json at all",
+                "still not json",
+            ]
+        )
+        orch = self._orch(provider)
+        result = orch.execute([self._instruction_step()], confirm=True)
+        self.assertEqual(result["status"], "failed")
+        message = result["trace"][0]["result"]["error"]["message"]
+        self.assertIn("invalid patch", message)
+
+    def test_explicit_anchor_steps_skip_generator(self):
+        self.target.write_text("hello world\n")
+        step = {
+            "tool": "patch_file",
+            "action": "replace",
+            "params": {
+                "file_path": str(self.target),
+                "old": "hello",
+                "new": "goodbye",
+            },
+        }
+        provider = FakeProvider()
+        orch = self._orch(provider)
+        result = orch.execute([step], confirm=True)
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(result["trace"][0]["patch_generated"])
+        self.assertEqual(len(provider.calls), 0)
+
+    def test_unreadable_target_fails_cleanly(self):
+        missing = self.root / "missing.txt"
+        step = {
+            "tool": "patch_file",
+            "action": "replace",
+            "params": {
+                "file_path": str(missing),
+                "instruction": "anything",
+            },
+        }
+        provider = FakeProvider([json.dumps({"steps": [step]}), json.dumps({})])
+        orch = self._orch(provider)
+        result = orch.execute([step], confirm=True)
+        self.assertEqual(result["status"], "failed")
+        message = result["trace"][0]["result"]["error"]["message"]
+        self.assertIn("could not read", message)
+
+    def test_planner_prompt_forbids_hand_written_anchors(self):
+        provider = FakeProvider()
+        prompt = self._orch(provider).planner.build_prompt(
+            "request", {"candidates": []}
+        )
+        self.assertIn("instruction", prompt)
+        self.assertIn("ATOMIC", prompt)
+        self.assertIn("NEVER invent 'old', 'new' or 'diff'", prompt)
+
+    def test_plan_accepts_instruction_step_without_prior_read(self):
+        self.target.write_text("hello world\n")
+        plan = json.dumps({"steps": [self._instruction_step()]})
+        provider = FakeProvider([plan])
+        orch = self._orch(provider)
+        result = orch.plan("edit f.txt replacing hello with goodbye")
+        self.assertEqual(result["status"], "ok")
+
+
+class TestPatchGeneratorValidation(unittest.TestCase):
+    def setUp(self):
+        self.provider = FakeProvider()
+        self.generator = PatchGenerator(self.provider)
+
+    def test_replace_requires_unique_anchor(self):
+        error, params = PatchGenerator._validate(
+            {"mode": "replace", "old": "a", "new": "b"}, "a\na\n"
+        )
+        self.assertIn("2 times", error)
+        self.assertEqual(params, {})
+
+    def test_replace_all_allows_multiple(self):
+        error, params = PatchGenerator._validate(
+            {"mode": "replace", "old": "a", "new": "b", "replace_all": True},
+            "a\na\n",
+        )
+        self.assertIsNone(error)
+        self.assertEqual(params, {"old": "a", "new": "b", "replace_all": True})
+
+    def test_apply_validates_hunks_against_content(self):
+        diff = "--- f\n+++ f\n@@ -1,1 +1,1 @@\n-hello\n+goodbye\n"
+        ok_error, ok_params = PatchGenerator._validate(
+            {"mode": "apply", "diff": diff}, "hello\n"
+        )
+        self.assertIsNone(ok_error)
+        self.assertEqual(ok_params["diff"], diff)
+        bad_error, _ = PatchGenerator._validate(
+            {"mode": "apply", "diff": diff}, "different content\n"
+        )
+        self.assertIn("not found", bad_error)
+
+    def test_mode_inferred_from_payload_shape(self):
+        error, params = PatchGenerator._validate({"old": "a", "new": "b"}, "a\n")
+        self.assertIsNone(error)
+        self.assertEqual(params, {"old": "a", "new": "b"})
+
+
+class TestPreAssessment(unittest.TestCase):
+    def test_simple_request_stays_monolithic(self):
+        assessment = PreAssessor(threshold=3).assess("corrija o bug na funcao parse")
+        self.assertFalse(assessment["needs_split"])
+
+    def test_enumerated_request_needs_split(self):
+        request = "1. criar models\n2. criar rotas\n3. escrever testes"
+        assessment = PreAssessor(threshold=3).assess(request)
+        self.assertTrue(assessment["needs_split"])
+        self.assertEqual(assessment["signals"]["enumeration_items"], 3)
+
+    def test_env_threshold_override(self):
+        with patch.dict(os.environ, {"ORCH_SPLIT_THRESHOLD": "1"}):
+            assessor = PreAssessor()
+            self.assertEqual(assessor.threshold, 1)
+            # a single connector is enough at threshold 1
+            self.assertTrue(
+                assessor.assess("mude o titulo e depois mude o rodape")["needs_split"]
+            )
+
+    def test_explicit_constructor_threshold_wins_over_env(self):
+        with patch.dict(os.environ, {"ORCH_SPLIT_THRESHOLD": "1"}):
+            assessor = PreAssessor(threshold=5)
+            self.assertEqual(assessor.threshold, 5)
+
+    def test_decomposer_uses_llm_output(self):
+        provider = FakeProvider(
+            [
+                json.dumps(
+                    {
+                        "parts": [
+                            {"id": "X", "request": "parte A", "paths": ["src/a.py"]},
+                            {"id": "Y", "request": "parte B"},
+                        ]
+                    }
+                )
+            ]
+        )
+        result = Decomposer(provider).decompose("pedido composto")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["strategy"], "llm")
+        self.assertEqual([p["id"] for p in result["parts"]], ["PART-001", "PART-002"])
+        self.assertEqual(result["parts"][0]["paths"], ["src/a.py"])
+        self.assertEqual(result["parts"][1]["paths"], [])
+
+    def test_decomposer_falls_back_to_heuristics(self):
+        class Down:
+            def infer(self, prompt, config):
+                raise RuntimeError("provider down")
+
+        request = "1. criar models\n2. criar rotas\n3. escrever testes"
+        result = Decomposer(Down()).decompose(request)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["strategy"], "heuristic_fallback")
+        self.assertEqual(len(result["parts"]), 3)
+        self.assertIn("models", result["parts"][0]["request"])
+
+    def test_decomposer_single_part_means_no_split(self):
+        provider = FakeProvider([json.dumps({"parts": [{"request": "tudo junto"}]})])
+        result = Decomposer(provider).decompose("pedido simples")
+        self.assertEqual(result["status"], "single")
+
+    def test_decomposer_merges_excess_parts(self):
+        parts = [{"request": f"item {i}"} for i in range(9)]
+        provider = FakeProvider([json.dumps({"parts": parts})])
+        result = Decomposer(provider, max_parts=4).decompose("pedido gigante")
+        self.assertEqual(len(result["parts"]), 4)
+        self.assertIn("item 8", result["parts"][-1]["request"])
+
+
+class TestUndoLogCheckpoints(unittest.TestCase):
+    def test_rollback_to_keeps_prior_entries(self):
+        log = UndoLog()
+        # inert entries (restore of a non-existing path is a no-op delete)
+        entry = {
+            "tool": "write_file",
+            "action": "write",
+            "kind": "path",
+            "state": {
+                "type": "none",
+                "path": Path(log.backup_root) / "x",
+                "existed": False,
+            },
+        }
+        log._entries.append(dict(entry))
+        mark = log.checkpoint()
+        self.assertEqual(mark, 1)
+        log._entries.append(dict(entry, tool="patch_file"))
+        result = log.rollback_to(mark)
+        self.assertEqual(result["restored"], 1)
+        self.assertEqual(len(log._entries), 1)
+        self.assertEqual(log._entries[0]["tool"], "write_file")
+        # clamping beyond bounds is safe (nothing to restore)
+        self.assertEqual(log.rollback_to(99)["restored"], 0)
+        self.assertEqual(len(log._entries), 1)
+
+
+class TestScoreRequest(unittest.TestCase):
+    def test_connectors_and_verbs_count_points(self):
+        request = (
+            "Crie uma API de produtos.\n"
+            "Adicione autenticacao JWT.\n"
+            "Tambem configure o banco de dados e escreva testes."
+        )
+        score = score_request(request)
+        self.assertGreaterEqual(score["points"], 3)
+
+    def test_word_boundary_avoids_prefix_double_count(self):
+        score = score_request("criar models e criar rotas")
+        # 'cria' must NOT also match inside 'criar'
+        self.assertNotIn("cria", score["signals"]["change_verbs"])
+
+
+class TestDecompositionFlow(OrchestratorTestCase):
+    """End-to-end multi-part runs in legacy (agent relay) mode."""
+
+    def _parted_orch(self, responses):
+        with patch.dict(os.environ, {"ORCH_SPLIT_THRESHOLD": "1"}):
+            orch = Orchestrator(
+                self.registry, FakeProvider(responses), root=str(self.root)
+            )
+        return orch
+
+    def _compound(self):
+        return (
+            f"Crie o arquivo {self.root / 'report.txt'} com conteudo report.\n"
+            f"Tambem crie o arquivo {self.root / 'notes.txt'} com conteudo notes."
+        )
+
+    def _decomposition(self):
+        return json.dumps(
+            {
+                "parts": [
+                    {
+                        "id": "P1",
+                        "request": "create report",
+                        "rationale": "",
+                        "paths": [str(self.root / "report.txt")],
+                    },
+                    {
+                        "id": "P2",
+                        "request": "create notes",
+                        "rationale": "",
+                        "paths": [str(self.root / "notes.txt")],
+                    },
+                ]
+            }
+        )
+
+    def _plan_for(self, path, content):
+        return json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "write_file",
+                        "action": "write",
+                        "params": {"file_path": str(path), "content": content},
+                        "description": f"write {Path(path).name}",
+                    }
+                ]
+            }
+        )
+
+    def test_simple_request_below_threshold_skips_decomposition(self):
+        (self.root / "target.txt").write_text("hello\n")
+        plan = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": str(self.root / "target.txt")},
+                        "description": "read",
+                    }
+                ]
+            }
+        )
+        orch = self._parted_orch([plan])
+        result = orch.run("leia o arquivo target.txt")
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertNotIn("part", result)
+        self.assertFalse(orch.split_active)
+
+    def test_compound_request_splits_and_executes_per_part(self):
+        report = self.root / "report.txt"
+        notes = self.root / "notes.txt"
+        orch = self._parted_orch(
+            [
+                self._decomposition(),
+                self._plan_for(report, "report"),
+                self._plan_for(notes, "notes"),
+            ]
+        )
+        first = orch.run(self._compound())
+        self.assertEqual(first["status"], "awaiting_confirmation")
+        self.assertEqual(first["part"]["index"], 1)
+        self.assertEqual(first["part"]["total"], 2)
+        states = {p["id"]: p["state"] for p in first["parts_overview"]}
+        self.assertEqual(states, {"PART-001": "current", "PART-002": "pending"})
+        self.assertFalse(report.exists())
+
+        second = orch.execute(confirm=True)
+        self.assertEqual(second["status"], "awaiting_confirmation")
+        self.assertEqual(second["part"]["index"], 2)
+        self.assertTrue(report.exists())
+        self.assertFalse(notes.exists())
+
+        final = orch.execute(confirm=True)
+        self.assertEqual(final["status"], "success")
+        self.assertTrue(final["decomposed"])
+        self.assertEqual(
+            [p["id"] for p in final["parts_executed"]],
+            ["PART-001", "PART-002"],
+        )
+        self.assertEqual(report.read_text(), "report")
+        self.assertEqual(notes.read_text(), "notes")
+        self.assertFalse(orch.split_active)
+        self.assertIsNone(orch.last_parts)
+
+    def test_pending_reports_part_metadata(self):
+        orch = self._parted_orch(
+            [
+                self._decomposition(),
+                self._plan_for(self.root / "report.txt", "r"),
+                self._plan_for(self.root / "notes.txt", "n"),
+            ]
+        )
+        orch.run(self._compound())
+        pending = orch.pending()
+        self.assertEqual(pending["status"], "pending_plan")
+        self.assertEqual(pending["part"]["index"], 1)
+        self.assertEqual(len(pending["parts_overview"]), 2)
+
+    def test_failure_keeps_completed_parts_and_rolls_back_only_failed(self):
+        report = self.root / "report.txt"
+        doomed = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "run_command",
+                        "action": "run",
+                        "params": {"command": "exit 3"},
+                        "description": "doomed",
+                    }
+                ]
+            }
+        )
+        orch = self._parted_orch(
+            [
+                self._decomposition(),
+                self._plan_for(report, "report"),
+                doomed,
+            ]
+        )
+        orch.run(self._compound())
+        orch.execute(confirm=True)  # part 1 ok
+        stopped = orch.execute(confirm=True)  # part 2 fails
+        self.assertEqual(stopped["status"], "decomposition_stopped")
+        self.assertIn("execution failed", stopped["reason"])
+        self.assertEqual([p["id"] for p in stopped["completed_parts"]], ["PART-001"])
+        self.assertEqual([p["id"] for p in stopped["remaining_parts"]], ["PART-002"])
+        # part 1 stays applied; split state remains resumable
+        self.assertTrue(report.exists())
+        self.assertTrue(orch.split_active)
+        self.assertTrue(orch.part_failed)
+        rollback = (stopped.get("execution") or {}).get("rollback") or {}
+        self.assertEqual(rollback.get("restored"), 0)
+
+    def test_resume_after_failure_replans_with_feedback(self):
+        report = self.root / "report.txt"
+        a_txt = self.root / "alpha.txt"
+        a_txt.write_text("alpha\n")
+        doomed = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "run_command",
+                        "action": "run",
+                        "params": {"command": "exit 3"},
+                        "description": "doomed",
+                    }
+                ]
+            }
+        )
+        good = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "read_file",
+                        "action": "read",
+                        "params": {"file_path": str(a_txt)},
+                        "description": "read alpha",
+                    },
+                    {
+                        "tool": "patch_file",
+                        "action": "replace",
+                        "params": {
+                            "file_path": str(a_txt),
+                            "old": "alpha",
+                            "new": "alpha DONE",
+                        },
+                        "description": "good patch",
+                    },
+                ]
+            }
+        )
+        decomposition = json.dumps(
+            {
+                "parts": [
+                    {"id": "PA", "request": "create report", "paths": [str(report)]},
+                    {"id": "PB", "request": "adjust alpha text", "paths": [str(a_txt)]},
+                ]
+            }
+        )
+        orch = self._parted_orch(
+            [decomposition, self._plan_for(report, "report"), doomed, good]
+        )
+        orch.run(self._compound() + " e ajuste o texto")
+        orch.execute(confirm=True)
+        stopped = orch.execute(confirm=True)
+        self.assertEqual(stopped["status"], "decomposition_stopped")
+
+        resumed = orch.run(None)  # resume: replans part 2
+        self.assertEqual(resumed["status"], "awaiting_confirmation")
+        self.assertEqual(resumed["part"]["index"], 2)
+        planner_prompt = orch.provider.calls[-1][0]
+        self.assertIn("EXECUTION FAILURE", planner_prompt)
+
+        final = orch.execute(confirm=True)
+        self.assertEqual(final["status"], "success")
+        self.assertEqual(a_txt.read_text(), "alpha DONE\n")
+
+    def test_explicit_paths_disable_splitting(self):
+        (self.root / "solo.txt").write_text("x\n")
+        new_path = self.root / "brand-new.txt"
+        plan = json.dumps(
+            {
+                "steps": [
+                    {
+                        "tool": "write_file",
+                        "action": "write",
+                        "params": {
+                            "file_path": str(new_path),
+                            "content": "fresh",
+                        },
+                        "description": "create",
+                    }
+                ]
+            }
+        )
+        orch = self._parted_orch([plan])
+        compound = (
+            f"Crie {new_path} e tambem ajuste tudo no solo.txt com outras "
+            "coisas pendentes"
+        )
+        result = orch.run(compound, paths=[str(new_path)])
+        self.assertEqual(result["status"], "awaiting_confirmation")
+        self.assertNotIn("part", result)
+        self.assertFalse(orch.split_active)
+
+    def test_abort_clears_part_state(self):
+        orch = self._parted_orch(
+            [
+                self._decomposition(),
+                self._plan_for(self.root / "report.txt", "r"),
+                self._plan_for(self.root / "notes.txt", "n"),
+            ]
+        )
+        orch.run(self._compound())
+        aborted = orch.abort()
+        self.assertEqual(aborted["status"], "aborted")
+        self.assertFalse(orch.split_active)
+        self.assertIsNone(orch.last_parts)
+        self.assertEqual(orch.pending()["status"], "no_pending_plan")
 
 
 if __name__ == "__main__":

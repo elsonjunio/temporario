@@ -22,6 +22,16 @@ from src.tools.registry import ToolRegistry
 TOOL_CONTRACT = ("MANUAL", "SPEC", "get_manual", "dispatch")
 
 
+def _is_generated_patch(step: dict[str, Any]) -> bool:
+    """True when the patch payload is generated at execution time from the
+    current disk content (step carries an ``instruction`` and no explicit
+    anchors), so plan-time anchor checks do not apply."""
+    params = step.get("params") or {}
+    return (
+        "old" not in params and "diff" not in params and bool(params.get("instruction"))
+    )
+
+
 class ImpactAssessor:
     """Deterministic target profiling and impact analysis.
 
@@ -252,6 +262,12 @@ class ImpactAssessor:
             if not target_path:
                 continue
             prof = self.profile(target_path)
+            if candidate.get("new_project") or candidate.get("type") == "workspace_root":
+                # Greenfield root: the directory exists but the PROJECT does
+                # not; everything under it will be created from scratch.
+                prof["change_mode"] = "create_project"
+                prof["recommended_tool"] = "write_file"
+                prof["greenfield"] = True
             prof["risks"] = self.risks(prof)
             targets.append(prof)
         return {"request": request, "targets": targets}
@@ -358,15 +374,24 @@ class ImpactAssessor:
                 mutated.add(norm)
                 continue
             if tool == "patch_file" and norm not in known:
-                issues.append(
-                    f"step {index}: patch_file {params.get('action')} on "
-                    f"{file_path} without a prior read_file (or write_file) of "
-                    "that exact path in the plan. Patch anchors must be copied "
-                    "verbatim from the file, so add a read_file step for it "
-                    "first."
-                )
+                # Steps that carry an instruction get their concrete payload
+                # generated at execution time from the CURRENT disk content
+                # (dedicated patch generator), so no prior read_file is
+                # required and there are no hand-written anchors to check.
+                if not _is_generated_patch(step):
+                    issues.append(
+                        f"step {index}: patch_file {params.get('action')} on "
+                        f"{file_path} without a prior read_file (or write_file) of "
+                        "that exact path in the plan. Patch anchors must be copied "
+                        "verbatim from the file, so add a read_file step for it "
+                        "first."
+                    )
             if tool == "patch_file":
-                if norm in known and norm not in mutated:
+                if (
+                    norm in known
+                    and norm not in mutated
+                    and not _is_generated_patch(step)
+                ):
                     issues.extend(
                         self._patch_anchor_issues(
                             index, str(step.get("action")), file_path, params

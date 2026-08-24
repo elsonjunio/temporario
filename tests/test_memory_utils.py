@@ -83,19 +83,40 @@ class TestBuildConfigPrompt(unittest.TestCase):
         ):
             self.assertNotIn(invoke, text)
 
+    def _assert_orch_routing(self, text):
+        self.assertIn("QUESTION / ANALYSIS", text)
+        self.assertIn("an evaluation never changes files", text)
+        self.assertIn("navigation", text)
+        # Changes are delegated to the orchestrator.
+        self.assertIn("'orchestrator'", text)
+        self.assertIn("confirm=true", text)
+        # Other subagents stay disabled; never instruct the model to
+        # INVOKE them directly.
+        for invoke in (
+            "discovery run",
+            "planner run",
+            "executor run",
+            "REPLAN_REQUIRED",
+        ):
+            self.assertNotIn(invoke, text)
+
     def test_fast_mode_instructions(self):
-        self._assert_base_only(AGENT_MODES["fast"])
+        self._assert_orch_routing(AGENT_MODES["fast"])
 
     def test_fast_mode_routes_analysis_to_base_tools(self):
         text = AGENT_MODES["fast"]
         self.assertIn("QUESTION / ANALYSIS", text)
         self.assertIn("an evaluation never changes files", text)
+        self.assertNotIn("write_file/patch_file/", text)
 
     def test_balanced_mode_instructions(self):
-        self._assert_base_only(AGENT_MODES["balanced"])
+        self._assert_orch_routing(AGENT_MODES["balanced"])
 
     def test_precision_mode_instructions(self):
-        self._assert_base_only(AGENT_MODES["precision"])
+        text = AGENT_MODES["precision"]
+        self._assert_base_only(text)
+        # precision has no orchestrator at all
+        self.assertNotIn("orchestrator' tool", text)
 
     def test_build_config_prompt_with_custom_instructions(self):
         config = build_config_prompt("manual", instructions=AGENT_MODES["precision"])

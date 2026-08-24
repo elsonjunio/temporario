@@ -12,7 +12,14 @@ READ_PAGE_SIZE = 100_000
 
 class Executor:
     """Runs a plan step by step through the registry, validating each mutation
-    and rolling everything back on failure."""
+    and rolling everything back on failure.
+
+    Every step is atomic: it is dispatched purely from its own params. When a
+    ``patch_file`` step carries an ``instruction`` instead of hand-written
+    anchors, the concrete payload is generated right before dispatch by the
+    injected ``patch_generator`` from the CURRENT file content on disk — never
+    from context accumulated in earlier steps.
+    """
 
     def __init__(
         self,
@@ -20,15 +27,60 @@ class Executor:
         undo_log: UndoLog,
         memory: Memory | None = None,
         impact: Any | None = None,
+        patch_generator: Any | None = None,
     ) -> None:
         self.registry = registry
         self.undo_log = undo_log
+        # Local (orchestrator-owned) memory only; never the agent's shared one.
         self.memory = memory
         self.impact = impact
+        self.patch_generator = patch_generator
 
     def _record(self, tool: str, action: str, params: dict, result: dict) -> None:
         if self.memory is not None:
             self.memory.add_tool(tool, action, params, result)
+
+    def _read_target(self, file_path: str) -> str | None:
+        read = self.registry.dispatch(
+            "read_file",
+            "read",
+            file_path=file_path,
+            page_size=READ_PAGE_SIZE,
+        )
+        if read.get("status") != "success":
+            return None
+        return read.get("current_page_content") or read.get("content") or ""
+
+    def _generate_patch_params(
+        self, params: dict, description: str
+    ) -> dict[str, Any] | None:
+        """Fill a patch_file step's payload via the dedicated generator.
+
+        Returns ``None`` when the step does not need generation (explicit
+        anchors already present) or when no generator is wired.
+        """
+        if self.patch_generator is None:
+            return None
+        if "old" in params or "diff" in params or not params.get("instruction"):
+            return None
+        file_path = str(params.get("file_path", ""))
+        content = self._read_target(file_path)
+        if content is None:
+            return {
+                "status": "error",
+                "message": (
+                    f"could not read {file_path} to generate the patch "
+                    "(file missing or unreadable)"
+                ),
+            }
+        instruction = str(params.get("instruction")) or description
+        generated = self.patch_generator.generate(file_path, content, instruction)
+        if generated.get("status") != "ok":
+            return {
+                "status": "error",
+                "message": generated.get("message", "patch generation failed"),
+            }
+        return {"status": "ok", "params": dict(generated.get("params", {}))}
 
     def _target_path(self, tool: str, action: str, params: dict) -> str | None:
         if tool in ("write_file", "patch_file"):
@@ -144,9 +196,59 @@ class Executor:
             ):
                 params["cwd"] = self.impact.root
 
+            generated: dict[str, Any] | None = None
+            if tool == "patch_file":
+                generated = self._generate_patch_params(params, description)
+                if generated is not None and generated.get("status") != "ok":
+                    result = {
+                        "status": "error",
+                        "error": {
+                            "message": generated.get(
+                                "message", "patch generation failed"
+                            )
+                        },
+                    }
+                    self.undo_log.snapshot(tool, action, params)
+                    self._record(tool, action, params, result)
+                    trace.append(
+                        {
+                            "tool": tool,
+                            "action": action,
+                            "description": description,
+                            "params": params,
+                            "result": result,
+                            "ok": False,
+                            "validated": None,
+                            "read_warn": None,
+                            "patch_generated": False,
+                        }
+                    )
+                    if rollback_on_failure:
+                        rollback = self.undo_log.rollback()
+                    else:
+                        rollback = {
+                            "status": "kept",
+                            "reason": "rollback_on_failure=False",
+                        }
+                    return {
+                        "status": "failed",
+                        "failed_step": step,
+                        "trace": trace,
+                        "rollback": rollback,
+                    }
+                if generated is not None:
+                    params.update(generated["params"])
+
             self.undo_log.snapshot(tool, action, params)
-            result = self.registry.dispatch(tool, action, **params)
-            self._record(tool, action, params, result)
+            # ``instruction`` is an orchestration-only hint (drives the patch
+            # generator); the underlying tool does not know about it.
+            dispatch_params = {
+                key: value
+                for key, value in params.items()
+                if not (tool == "patch_file" and key == "instruction")
+            }
+            result = self.registry.dispatch(tool, action, **dispatch_params)
+            self._record(tool, action, dispatch_params, result)
 
             ok = result.get("status") == "success" and "error" not in result
 
@@ -173,6 +275,7 @@ class Executor:
                     "ok": ok,
                     "validated": validated,
                     "read_warn": read_warn,
+                    "patch_generated": bool(generated is not None),
                 }
             )
 

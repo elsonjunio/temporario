@@ -261,15 +261,60 @@ def _json_candidates(text: str) -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
+def _close_truncated(candidate: str) -> str | None:
+    """Close a JSON payload truncated BETWEEN tokens by replaying its bracket
+    stack (e.g. the model hit its token limit right after a complete step).
+
+    Walks the text tracking strings/escapes and the stack of open ``{`` /
+    ``[``; at the cut point every open bracket is closed in reverse order.
+    Returns ``None`` when nothing needs closing or when the cut lands INSIDE a
+    string literal: a half-written string means half-written content/anchors,
+    which must never be fabricated into a "complete" payload.
+    """
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in candidate:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]" and stack:
+            stack.pop()
+    if in_string or not stack:
+        return None
+    suffix = "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+    return candidate + suffix
+
+
 def extract_json_object(text: str) -> Any | None:
-    """Return the first top-level JSON value (object/array) found in ``text``."""
+    """Return the first top-level JSON value (object/array) found in ``text``.
+
+    Falls back to syntax normalization plus deterministic truncation repair
+    (closing the brackets left open by a payload whose output hit the model's
+    token limit between two tokens), so the complete prefix still parses
+    instead of being discarded entirely. Cuts inside a string are never
+    repaired.
+    """
     for candidate in _json_candidates(text):
-        try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
-            repaired = _normalize_candidate(candidate)
+        variants = [candidate]
+        closed = _close_truncated(candidate)
+        if closed is not None:
+            variants.append(closed)
+            variants.append(_normalize_candidate(closed))
+        else:
+            variants.append(_normalize_candidate(candidate))
+        for variant in variants:
             try:
-                return json.loads(repaired)
+                return json.loads(variant)
             except (json.JSONDecodeError, TypeError):
                 continue
     return None
