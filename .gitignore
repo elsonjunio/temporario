@@ -221,3 +221,5 @@ __marimo__/
 
 # Browser credentials (proxy / site auth)
 .browser-credentials.json
+# Config local (pode conter chaves de API)
+/config.json

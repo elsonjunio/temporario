@@ -29,9 +29,9 @@ __all__ = [
 ]
 
 OPENCODE_DEFAULTS = {
-    "baseUrl": "https://opencode.ai/zen/v1",
+    "baseUrl": "https://opencode.ai/inference/go/v1",
     "apiKey": "",
-    "model": "big-pickle",
+    "model": "deepseek-v4.1-flash",
     "reasoningEffort": None,
 }
 LMSTUDIO_DEFAULTS = {

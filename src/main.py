@@ -1,4 +1,4 @@
-"""Entry point: the agent-mini CLI with the OpenCode Zen and LM Studio providers."""
+"""Entry point: the agent-mini CLI with the OpenCode Go and LM Studio providers."""
 
 from __future__ import annotations
 
@@ -47,8 +47,8 @@ def setup(provider_name: str, workspace: str | None, force: bool) -> None:
             "provider": provider_name,
             "providers": {
                 "opencode": {
-                    "baseUrl": "https://opencode.ai/zen/v1",
-                    "model": os.getenv("OPENCODE_MODEL") or "big-pickle",
+                    "baseUrl": "https://opencode.ai/inference/go/v1",
+                    "model": os.getenv("OPENCODE_MODEL") or "deepseek-v4.1-flash",
                 },
                 "lmstudio": {
                     "baseUrl": "http://localhost:1234/v1",
