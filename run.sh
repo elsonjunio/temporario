@@ -9,5 +9,12 @@ if [ ! -x "$PYTHON" ]; then
     exit 1
 fi
 
+# agent-mini uses the workspace from config.json, not the process cwd. Default
+# it to this project so the agent does not fall back to ~/.agent-mini/workspace.
+# Override with AGENT_MINI_WORKSPACE=/path (or chat --workspace /path).
+if [ -z "${AGENT_MINI_WORKSPACE:-}" ]; then
+    export AGENT_MINI_WORKSPACE="$SCRIPT_DIR"
+fi
+
 cd "$SCRIPT_DIR"
 exec "$PYTHON" -m src.main "$@"

@@ -27,6 +27,18 @@ Config alternativo (sem tocar em `~/.agent-mini`):
 AGENT_MINI_HOME=/caminho/para/.agent-mini ./run.sh setup
 ```
 
+O `run.sh` define o workspace como a raiz deste repositório por padrão. Para usar
+outro projeto, sobrescreva:
+
+```bash
+AGENT_MINI_WORKSPACE=~/projetos/app ./run.sh chat
+# ou: ./run.sh chat --workspace ~/projetos/app
+```
+
+No `config.json`, `"workspace": null` faz o agent-mini usar
+`~/.agent-mini/workspace`; o `setup` agora grava o diretório atual (ou
+`AGENT_MINI_WORKSPACE`) para evitar esse fallback.
+
 ## Providers
 
 O provider ativo fica em `~/.agent-mini/config.json` (`"provider": "opencode"` ou

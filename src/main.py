@@ -13,7 +13,7 @@ from src.providers import register
 register()
 
 from agent_mini.cli import cli  # noqa: E402
-from agent_mini.config import agent_home, config_file, save_config  # noqa: E402
+from agent_mini.config import config_file, save_config  # noqa: E402
 
 PROVIDER_NAMES = ("opencode", "lmstudio")
 
@@ -30,7 +30,7 @@ PROVIDER_NAMES = ("opencode", "lmstudio")
 @click.option(
     "--workspace",
     default=None,
-    help="Workspace directory (default: <agent-mini home>/workspace).",
+    help="Workspace directory (default: AGENT_MINI_WORKSPACE or the current directory).",
 )
 @click.option("--force", is_flag=True, help="Overwrite an existing config file.")
 def setup(provider_name: str, workspace: str | None, force: bool) -> None:
@@ -39,7 +39,9 @@ def setup(provider_name: str, workspace: str | None, force: bool) -> None:
     if path.exists() and not force:
         raise click.ClickException(f"{path} already exists; use --force to overwrite it.")
 
-    directory = Path(workspace).expanduser() if workspace else agent_home() / "workspace"
+    directory = Path(
+        workspace or os.getenv("AGENT_MINI_WORKSPACE") or Path.cwd()
+    ).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
 
     save_config(
