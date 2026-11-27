@@ -21,7 +21,7 @@ from src.policy import install as install_workspace_policy  # noqa: E402
 # Ask only when a call leaves the workspace (see src/policy.py).
 install_workspace_policy(_agent_cli)
 
-PROVIDER_NAMES = ("opencode", "lmstudio")
+PROVIDER_NAMES = ("opencode", "lmstudio", "stackspot")
 
 
 @cli.command("setup")
@@ -62,13 +62,27 @@ def setup(provider_name: str, workspace: str | None, force: bool) -> None:
                     "baseUrl": "http://localhost:1234/v1",
                     "model": os.getenv("LMSTUDIO_MODEL") or "local-model",
                 },
+                "stackspot": {
+                    "baseUrl": "https://genai-inference-app.stackspot.com",
+                    "authUrl": "https://idm.stackspot.com",
+                    "realm": os.getenv("STACKSPOT_REALM") or "stackspot-freemium",
+                    "model": os.getenv("STACKSPOT_AGENT_ID") or "",
+                    "knowledge": True,
+                    "returnKs": False,
+                },
             },
             "workspace": str(directory),
             "tools": {"confirm": ["shell", "write_file", "edit_file"]},
         }
     )
     click.echo(f"Config written to {path}")
-    click.echo("Set OPENCODE_API_KEY and/or LMSTUDIO_MODEL, then run: ./run.sh doctor")
+    if provider_name == "stackspot":
+        click.echo(
+            "Set STACKSPOT_CLIENT_ID, STACKSPOT_CLIENT_SECRET and STACKSPOT_AGENT_ID, "
+            "then run: ./run.sh doctor"
+        )
+    else:
+        click.echo("Set OPENCODE_API_KEY or LMSTUDIO_MODEL, then run: ./run.sh doctor")
 
 
 if __name__ == "__main__":

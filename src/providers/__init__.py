@@ -20,10 +20,12 @@ import agent_mini.providers as _providers
 
 from .lmstudio import LMStudioProvider
 from .opencode import OpenCodeProvider
+from .stackspot import StackSpotProvider
 
 __all__ = [
     "LMStudioProvider",
     "OpenCodeProvider",
+    "StackSpotProvider",
     "create_provider",
     "register",
 ]
@@ -42,8 +44,22 @@ LMSTUDIO_DEFAULTS = {
     "reasoningEffort": None,
     "maxTokens": None,
 }
+STACKSPOT_DEFAULTS = {
+    "baseUrl": "https://genai-inference-app.stackspot.com",
+    "authUrl": "https://idm.stackspot.com",
+    "realm": "stackspot-freemium",
+    "apiKey": "",
+    "model": "",
+    "reasoningEffort": None,
+    "knowledge": True,
+    "returnKs": False,
+}
 
-_DEFAULTS = {"opencode": OPENCODE_DEFAULTS, "lmstudio": LMSTUDIO_DEFAULTS}
+_DEFAULTS = {
+    "opencode": OPENCODE_DEFAULTS,
+    "lmstudio": LMSTUDIO_DEFAULTS,
+    "stackspot": STACKSPOT_DEFAULTS,
+}
 _ORIGINAL_CREATE_PROVIDER = _providers.create_provider
 
 
@@ -67,6 +83,18 @@ def _positive_int(value: Any) -> int | None:
     return number if number > 0 else None
 
 
+def _bool_value(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    return _bool_value(os.getenv(name), default)
+
+
 def create_provider(config: dict[str, Any]) -> _providers.Provider:
     """Build the provider named by ``config["provider"]``.
 
@@ -78,6 +106,17 @@ def create_provider(config: dict[str, Any]) -> _providers.Provider:
         return _ORIGINAL_CREATE_PROVIDER(config)
 
     cfg = config["providers"][name]
+    if name == "stackspot":
+        return StackSpotProvider(
+            agent_id=_env("STACKSPOT_AGENT_ID") or cfg.get("agentId") or cfg.get("model") or "",
+            client_id=_env("STACKSPOT_CLIENT_ID") or cfg.get("clientId") or "",
+            client_secret=_env("STACKSPOT_CLIENT_SECRET") or cfg.get("clientSecret") or "",
+            realm=_env("STACKSPOT_REALM") or cfg.get("realm") or "stackspot-freemium",
+            base_url=_env("STACKSPOT_BASE_URL") or cfg.get("baseUrl") or "",
+            auth_url=_env("STACKSPOT_AUTH_URL") or cfg.get("authUrl") or "",
+            knowledge=_bool_env("STACKSPOT_KNOWLEDGE", _bool_value(cfg.get("knowledge"), True)),
+            return_ks=_bool_env("STACKSPOT_RETURN_KS", _bool_value(cfg.get("returnKs"), False)),
+        )
     if name == "opencode":
         # Go serves cloud-class models only. Set the tier up front so doctor and
         # the first turn agree with model_info(); an explicit tier/context window

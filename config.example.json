@@ -10,6 +10,14 @@
       "baseUrl": "http://localhost:1234/v1",
       "apiKey": "",
       "model": "local-model"
+    },
+    "stackspot": {
+      "baseUrl": "https://genai-inference-app.stackspot.com",
+      "authUrl": "https://idm.stackspot.com",
+      "realm": "stackspot-freemium",
+      "model": "",
+      "knowledge": true,
+      "returnKs": false
     }
   },
   "workspace": null,

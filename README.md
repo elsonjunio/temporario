@@ -41,13 +41,14 @@ No `config.json`, `"workspace": null` faz o agent-mini usar
 
 ## Providers
 
-O provider ativo fica em `~/.agent-mini/config.json` (`"provider": "opencode"` ou
-`"lmstudio"`). Variáveis de ambiente têm prioridade sobre o arquivo:
+O provider ativo fica em `~/.agent-mini/config.json` (`"provider": "opencode"`,
+`"lmstudio"` ou `"stackspot"`). Variáveis de ambiente têm prioridade sobre o arquivo:
 
 | Provider | Variáveis |
 |---|---|
 | opencode | `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_BASE_URL`, `OPENCODE_MAX_TOKENS` |
 | lmstudio | `LMSTUDIO_MODEL`, `LMSTUDIO_BASE_URL`, `LMSTUDIO_API_KEY`, `LMSTUDIO_MAX_TOKENS` |
+| stackspot | `STACKSPOT_CLIENT_ID`, `STACKSPOT_CLIENT_SECRET`, `STACKSPOT_AGENT_ID`, `STACKSPOT_REALM`, `STACKSPOT_BASE_URL`, `STACKSPOT_AUTH_URL`, `STACKSPOT_KNOWLEDGE`, `STACKSPOT_RETURN_KS` |
 
 O provider `opencode` lê `/v1/models` e usa o contexto real (~1M tokens) e as
 capabilities do modelo. Modelos do Go são classificados como tier `cloud`
@@ -61,6 +62,36 @@ pequenos). Para respostas longas:
 export OPENCODE_MAX_TOKENS=16384
 # ou, no config: "providers": { "opencode": { "maxTokens": 16384 } }
 ```
+
+### StackSpot (agent chat)
+
+O endpoint `POST /v1/agent/<AGENT_ID>/chat` não é OpenAI-compatible: recebe um
+`user_prompt` único, não tem parâmetro `tools` e usa OAuth2 `client_credentials`
+em `https://idm.stackspot.com/<REALM>/oidc/oauth/token`. O adapter
+`src/providers/stackspot.py`:
+
+- autentica e cacheia o token; renova antes de expirar e em `401`
+  (`authenticate()` / `refresh_token()`, com fallback de `refresh_token` para
+  `client_credentials`);
+- achata o histórico do agent-mini em `user_prompt` e envia
+  `use_conversation: false`;
+- embute os schemas das tools e o protocolo `<tool_call>{...}</tool_call>`;
+- converte a resposta em `ToolCall` (aceita `<tool_call>`, `[TOOL:...]`,
+  JSON em bloco cerca e JSON puro).
+
+```bash
+export STACKSPOT_CLIENT_ID="..."
+export STACKSPOT_CLIENT_SECRET="..."
+export STACKSPOT_AGENT_ID="01K..."
+export STACKSPOT_REALM="stackspot-freemium"   # opcional
+./run.sh setup --provider stackspot --force
+./run.sh doctor
+./run.sh chat
+```
+
+`STACKSPOT_KNOWLEDGE` (padrão `true`) e `STACKSPOT_RETURN_KS` (padrão `false`)
+controlam `stackspot_knowledge` e `return_ks_in_response`. Como as tools são
+descritas no prompt, a qualidade depende de o agente StackSpot seguir o protocolo.
 
 Trocar de provider numa sessão: `/model opencode/deepseek-v4.1-flash` ou
 `/model lmstudio/qwen3.5-9b` (o comando `/model` do agent-mini). Também é possível
@@ -107,6 +138,7 @@ src/
     base.py            # OpenAIProvider com limite de resposta configurável
     opencode.py        # OpenCode Go
     lmstudio.py        # LM Studio / OpenAI-compatible local
+    stackspot.py       # StackSpot agent chat (OAuth2 + prompt tools)
   policy.py            # aprovação só fora do workspace
 config.example.json    # modelo de configuração
 run.sh                 # wrapper do CLI usando o .venv
