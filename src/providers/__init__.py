@@ -33,12 +33,14 @@ OPENCODE_DEFAULTS = {
     "apiKey": "",
     "model": "deepseek-v4.1-flash",
     "reasoningEffort": None,
+    "maxTokens": None,
 }
 LMSTUDIO_DEFAULTS = {
     "baseUrl": "http://localhost:1234/v1",
     "apiKey": "",
     "model": "local-model",
     "reasoningEffort": None,
+    "maxTokens": None,
 }
 
 _DEFAULTS = {"opencode": OPENCODE_DEFAULTS, "lmstudio": LMSTUDIO_DEFAULTS}
@@ -47,6 +49,22 @@ _ORIGINAL_CREATE_PROVIDER = _providers.create_provider
 
 def _env(name: str) -> str:
     return os.getenv(name, "")
+
+
+def _env_int(name: str) -> int | None:
+    try:
+        value = int(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def create_provider(config: dict[str, Any]) -> _providers.Provider:
@@ -61,17 +79,25 @@ def create_provider(config: dict[str, Any]) -> _providers.Provider:
 
     cfg = config["providers"][name]
     if name == "opencode":
+        # Go serves cloud-class models only. Set the tier up front so doctor and
+        # the first turn agree with model_info(); an explicit tier/context window
+        # in the config still wins.
+        agent_cfg = config.setdefault("agent", {})
+        if not agent_cfg.get("tier") and not agent_cfg.get("contextWindow"):
+            agent_cfg["tier"] = "cloud"
         return OpenCodeProvider(
             model=_env("OPENCODE_MODEL") or cfg.get("model"),
             base_url=_env("OPENCODE_BASE_URL") or cfg.get("baseUrl"),
             api_key=_env("OPENCODE_API_KEY") or cfg.get("apiKey") or _env("AGENT_MINI_API_KEY"),
             reasoning_effort=cfg.get("reasoningEffort"),
+            max_tokens=_env_int("OPENCODE_MAX_TOKENS") or _positive_int(cfg.get("maxTokens")),
         )
     return LMStudioProvider(
         model=_env("LMSTUDIO_MODEL") or cfg.get("model"),
         base_url=_env("LMSTUDIO_BASE_URL") or cfg.get("baseUrl"),
         api_key=_env("LMSTUDIO_API_KEY") or cfg.get("apiKey") or _env("AGENT_MINI_API_KEY"),
         reasoning_effort=cfg.get("reasoningEffort"),
+        max_tokens=_env_int("LMSTUDIO_MAX_TOKENS") or _positive_int(cfg.get("maxTokens")),
     )
 
 

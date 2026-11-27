@@ -34,8 +34,21 @@ O provider ativo fica em `~/.agent-mini/config.json` (`"provider": "opencode"` o
 
 | Provider | Variáveis |
 |---|---|
-| opencode | `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_BASE_URL` |
-| lmstudio | `LMSTUDIO_MODEL`, `LMSTUDIO_BASE_URL`, `LMSTUDIO_API_KEY` |
+| opencode | `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_BASE_URL`, `OPENCODE_MAX_TOKENS` |
+| lmstudio | `LMSTUDIO_MODEL`, `LMSTUDIO_BASE_URL`, `LMSTUDIO_API_KEY`, `LMSTUDIO_MAX_TOKENS` |
+
+O provider `opencode` lê `/v1/models` e usa o contexto real (~1M tokens) e as
+capabilities do modelo. Modelos do Go são classificados como tier `cloud`
+(orçamento de 32k tokens, 25 iterações, resultados de tool até 50k chars); um
+`agent.tier` ou `agent.contextWindow` explícito no config sobrescreve isso.
+
+O limite de resposta é 4096 tokens por padrão (proteção do agent-mini para modelos
+pequenos). Para respostas longas:
+
+```bash
+export OPENCODE_MAX_TOKENS=16384
+# ou, no config: "providers": { "opencode": { "maxTokens": 16384 } }
+```
 
 Trocar de provider numa sessão: `/model opencode/deepseek-v4.1-flash` ou
 `/model lmstudio/qwen3.5-9b` (o comando `/model` do agent-mini). Também é possível
@@ -57,7 +70,7 @@ src/
   main.py              # entrypoint: registra os providers e roda o CLI do agent-mini
   providers/
     __init__.py        # create_provider + register()
-    base.py            # OpenAIProvider com limite de resposta
+    base.py            # OpenAIProvider com limite de resposta configurável
     opencode.py        # OpenCode Go
     lmstudio.py        # LM Studio / OpenAI-compatible local
 config.example.json    # modelo de configuração

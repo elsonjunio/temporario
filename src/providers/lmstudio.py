@@ -18,6 +18,7 @@ class LMStudioProvider(CappedOpenAIProvider):
     - ``LMSTUDIO_BASE_URL`` — server base URL (default ``http://localhost:1234/v1``)
     - ``LMSTUDIO_MODEL`` — model id to use
     - ``LMSTUDIO_API_KEY`` — optional token for servers started with an API key
+    - ``LMSTUDIO_MAX_TOKENS`` — reply cap (default: agent-mini's 4096)
     """
 
     label = "LM Studio"
@@ -28,6 +29,7 @@ class LMStudioProvider(CappedOpenAIProvider):
         base_url: str | None = None,
         api_key: str | None = None,
         reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model or os.getenv("LMSTUDIO_MODEL") or DEFAULT_MODEL,
@@ -35,4 +37,5 @@ class LMStudioProvider(CappedOpenAIProvider):
             api_key or os.getenv("LMSTUDIO_API_KEY", ""),
             reasoning_effort,
             name="lmstudio",
+            max_tokens=max_tokens,
         )
