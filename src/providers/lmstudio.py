@@ -1,42 +1,38 @@
+"""LM Studio provider (local OpenAI-compatible server)."""
+
 from __future__ import annotations
 
-from typing import Any
+import os
 
-from src.providers.base import BaseProvider, ProviderError
+from .base import CappedOpenAIProvider
 
-__all__ = ["LMStudioProvider", "ProviderError"]
+DEFAULT_BASE_URL = "http://localhost:1234/v1"
+DEFAULT_MODEL = "local-model"
 
 
-class LMStudioProvider(BaseProvider):
-    """Client for LM Studio's local OpenAI-compatible server.
+class LMStudioProvider(CappedOpenAIProvider):
+    """LM Studio or any local OpenAI-compatible server.
 
-    Config is read from the environment (via ``.env``) but every value can be
-    overridden by constructor arguments:
+    Configuration (environment variables win over config values):
 
     - ``LMSTUDIO_BASE_URL`` — server base URL (default ``http://localhost:1234/v1``)
     - ``LMSTUDIO_MODEL`` — model id to use
-    - ``LMSTUDIO_API_KEY`` — optional bearer token for servers started with an
-      API key; when unset, requests carry no Authorization header
-    - ``LMSTUDIO_TIMEOUT`` — request timeout in seconds (default ``60``)
+    - ``LMSTUDIO_API_KEY`` — optional token for servers started with an API key
     """
 
     label = "LM Studio"
-    default_base_url = "http://localhost:1234/v1"
-    api_key_env = "LMSTUDIO_API_KEY"
-    model_env = "LMSTUDIO_MODEL"
-    base_url_env = "LMSTUDIO_BASE_URL"
-    timeout_env = "LMSTUDIO_TIMEOUT"
-    default_timeout = 60
-    require_api_key = False
 
-    def models(self) -> list[str]:
-        """List the model ids currently loaded in the local server."""
-        payload = self._request(
-            f"{self.base_url}/models",
-            headers={"User-Agent": "opencode-agent/1.0"},
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
+        super().__init__(
+            model or os.getenv("LMSTUDIO_MODEL") or DEFAULT_MODEL,
+            base_url or os.getenv("LMSTUDIO_BASE_URL") or DEFAULT_BASE_URL,
+            api_key or os.getenv("LMSTUDIO_API_KEY", ""),
+            reasoning_effort,
+            name="lmstudio",
         )
-        return [
-            entry.get("id", "")
-            for entry in payload.get("data", [])
-            if isinstance(entry, dict)
-        ]

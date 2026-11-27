@@ -1,0 +1,19 @@
+{
+  "provider": "opencode",
+  "providers": {
+    "opencode": {
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "apiKey": "",
+      "model": "big-pickle"
+    },
+    "lmstudio": {
+      "baseUrl": "http://localhost:1234/v1",
+      "apiKey": "",
+      "model": "local-model"
+    }
+  },
+  "workspace": null,
+  "tools": {
+    "confirm": ["shell", "write_file", "edit_file"]
+  }
+}

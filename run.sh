@@ -2,13 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
-if [ ! -x "$SCRIPT_DIR/.venv/bin/python" ]; then
-    echo "Virtualenv nao encontrado em $SCRIPT_DIR/.venv" >&2
+if [ ! -x "$PYTHON" ]; then
+    echo "Virtualenv nao encontrado. Crie com: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
     exit 1
 fi
 
-export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
-
-exec "$VIRTUAL_ENV/bin/python" "$SCRIPT_DIR/src/bike.py"
+cd "$SCRIPT_DIR"
+exec "$PYTHON" -m src.main "$@"
