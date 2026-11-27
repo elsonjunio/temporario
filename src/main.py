@@ -13,7 +13,13 @@ from src.providers import register
 register()
 
 from agent_mini.cli import cli  # noqa: E402
+import agent_mini.cli as _agent_cli  # noqa: E402
 from agent_mini.config import config_file, save_config  # noqa: E402
+
+from src.policy import install as install_workspace_policy  # noqa: E402
+
+# Ask only when a call leaves the workspace (see src/policy.py).
+install_workspace_policy(_agent_cli)
 
 PROVIDER_NAMES = ("opencode", "lmstudio")
 

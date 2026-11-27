@@ -66,6 +66,28 @@ Trocar de provider numa sessão: `/model opencode/deepseek-v4.1-flash` ou
 `/model lmstudio/qwen3.5-9b` (o comando `/model` do agent-mini). Também é possível
 usar `./run.sh chat --provider lmstudio`.
 
+## Aprovação: só fora do workspace
+
+O agent-mini não tem confirmação por caminho: `tools.confirm` lista apenas nomes de
+tools. Este repositório instala uma política em `src/policy.py`:
+
+- `write_file`/`edit_file`: roda sem perguntar quando o `path` resolve dentro do workspace;
+- `shell`: roda sem perguntar quando o comando não referencia caminho absoluto, `~`,
+  `..`, link simbólico que escape, `$`/backtick ou `cd` sem destino;
+- qualquer caso externo cai no prompt normal do agent-mini (y/N/always/diff).
+
+Exemplos sem prompt: `cat notes.txt`, `echo x > out.txt`, `cd src && pytest`.
+Exemplos com prompt: `cat /etc/passwd`, `cd ..`, `echo $HOME`,
+`python -c "open('/etc/passwd')"`.
+
+É uma heurística, não uma fronteira de segurança: comandos que escrevem fora sem
+caminho explícito (por exemplo `pip install` global) não são detectados. As tools de
+arquivo continuam presas ao sandbox `workspace`. Para desligar a política:
+
+```bash
+AGENT_MINI_CONFIRM_POLICY=off ./run.sh chat
+```
+
 ## Uso
 
 ```bash
@@ -85,6 +107,7 @@ src/
     base.py            # OpenAIProvider com limite de resposta configurável
     opencode.py        # OpenCode Go
     lmstudio.py        # LM Studio / OpenAI-compatible local
+  policy.py            # aprovação só fora do workspace
 config.example.json    # modelo de configuração
 run.sh                 # wrapper do CLI usando o .venv
 ```
